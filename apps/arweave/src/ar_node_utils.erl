@@ -99,12 +99,13 @@ alter_wallet(Wallets, Target, Adjustment) ->
 
 do_apply_tx(
 		Wallets,
-		TX = #tx {
+		TX = #tx{
 			last_tx = Last,
-			owner = From
+			owner = From,
+			signature_type = SigType
 		},
 		Height) ->
-	Addr = ar_wallet:to_address(From),
+	Addr = ar_wallet:to_address(From, SigType),
 	Fork_1_8 = ar_fork:height_1_8(),
 	case {Height, maps:get(Addr, Wallets, not_found)} of
 		{H, {_Balance, _LastTX}} when H >= Fork_1_8 ->
@@ -126,10 +127,11 @@ update_sender_balance(
 		#tx {
 			id = ID,
 			owner = From,
+			signature_type = SigType,
 			quantity = Qty,
 			reward = Reward
 		}) ->
-	Addr = ar_wallet:to_address(From),
+	Addr = ar_wallet:to_address(From, SigType),
 	case maps:get(Addr, Wallets, not_found) of
 		{Balance, _LastTX} ->
 			maps:put(Addr, {Balance - (Qty + Reward), ID}, Wallets);
@@ -431,8 +433,8 @@ validate_block(cumulative_diff, {NewB, OldB}) ->
 -ifdef(DEBUG).
 is_wallet_invalid(#tx{ signature = <<>> }, _Wallets) ->
 	false;
-is_wallet_invalid(#tx{ owner = Owner }, Wallets) ->
-	Address = ar_wallet:to_address(Owner),
+is_wallet_invalid(#tx{ owner = Owner, signature_type = SigType }, Wallets) ->
+	Address = ar_wallet:to_address(Owner, SigType),
 	case maps:get(Address, Wallets, not_found) of
 		{Balance, LastTX} when Balance >= 0 ->
 			case Balance of
@@ -445,8 +447,8 @@ is_wallet_invalid(#tx{ owner = Owner }, Wallets) ->
 			true
 	end.
 -else.
-is_wallet_invalid(#tx{ owner = Owner }, Wallets) ->
-	Address = ar_wallet:to_address(Owner),
+is_wallet_invalid(#tx{ owner = Owner, signature_type = SigType }, Wallets) ->
+	Address = ar_wallet:to_address(Owner, SigType),
 	case maps:get(Address, Wallets, not_found) of
 		{Balance, LastTX} when Balance >= 0 ->
 			case Balance of

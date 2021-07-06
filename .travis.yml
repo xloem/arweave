@@ -1,3 +1,4 @@
+dist: bionic
 language: erlang
 addons:
     apt:
@@ -7,8 +8,7 @@ addons:
 install:
     - epmd -daemon
 otp_release:
-    - 23.1.2
-# blocklist
+    - 24.1
 branches:
     except:
     - master

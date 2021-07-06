@@ -11,7 +11,7 @@
 		sign_tx/3, sign_v1_tx/1, sign_v1_tx/2, sign_v1_tx/3, get_tx_anchor/0,
 		get_tx_anchor/1, join/1, join_on_slave/0, join_on_master/0,
 		get_last_tx/1, get_last_tx/2, get_tx_confirmations/2,
-		get_balance/1, test_with_mocked_functions/2,
+		get_balance/1, get_balance_by_address/2, test_with_mocked_functions/2,
 		get_tx_price/1, post_and_mine/2, read_block_when_stored/1,
 		read_block_when_stored/2, get_chunk/1, get_chunk/2, post_chunk/1, post_chunk/2,
 		random_v1_data/1, assert_get_tx_data/3, assert_get_tx_data_master/2,
@@ -362,7 +362,7 @@ sign_v1_tx(Node, Wallet, TXParams) ->
 	sign_tx(Node, Wallet, TXParams, fun ar_tx:sign_v1/2).
 
 sign_tx(Node, Wallet, TXParams, SignFun) ->
-	{_, Pub} = Wallet,
+	{_, {_, Owner}} = Wallet,
 	Data = maps:get(data, TXParams, <<>>),
 	DataSize = maps:get(data_size, TXParams, byte_size(Data)),
 	Reward = case maps:get(reward, TXParams, none) of
@@ -373,7 +373,7 @@ sign_tx(Node, Wallet, TXParams, SignFun) ->
 	end,
 	SignFun(
 		(ar_tx:new())#tx {
-			owner = Pub,
+			owner = Owner,
 			reward = Reward,
 			data = Data,
 			target = maps:get(target, TXParams, <<>>),
@@ -467,14 +467,16 @@ get_tx_confirmations(master, TXID) ->
 	end.
 
 get_balance(Pub) ->
-	Peer = slave_peer(),
-	{_, _, _, _, Port} = Peer,
+	get_balance_by_address(ar_wallet:to_address(Pub), slave).
+
+get_balance_by_address(Address, Node) ->
+	Peer = case Node of slave -> slave_peer(); master -> master_peer() end,
+	Port = element(5, Peer),
 	{ok, {{<<"200">>, _}, _, Reply, _, _}} =
 		ar_http:req(#{
 			method => get,
 			peer => Peer,
-			path => "/wallet/" ++ binary_to_list(ar_util:encode(ar_wallet:to_address(Pub)))
-					++ "/balance",
+			path => "/wallet/" ++ binary_to_list(ar_util:encode(Address)) ++ "/balance",
 			headers => [{<<"X-P2p-Port">>, integer_to_binary(Port)}]
 		}),
 	binary_to_integer(Reply).
@@ -517,7 +519,10 @@ test_with_mocked_functions(Functions, TestFun) ->
 	}.
 
 get_tx_price(DataSize) ->
-	get_tx_price(slave, DataSize, <<>>).
+	get_tx_price(slave, DataSize).
+
+get_tx_price(Node, DataSize) ->
+	get_tx_price(Node, DataSize, <<>>).
 
 get_tx_price(Node, DataSize, Target) ->
 	Peer = case Node of slave -> slave_peer(); master -> master_peer() end,

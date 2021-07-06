@@ -1,14 +1,8 @@
 -module(ar_pricing).
 
--export([
-	get_tx_fee/4,
-	get_miner_reward_and_endowment_pool/1,
-	get_tx_fee_pre_fork_2_4/4,
-	usd_to_ar_rate/1, usd_to_ar/3,
-	recalculate_usd_to_ar_rate/1,
-	usd_to_ar_pre_fork_2_4/3,
-	get_miner_reward_and_endowment_pool_pre_fork_2_4/1
-]).
+-export([get_tx_fee/4, get_miner_reward_and_endowment_pool/1, get_tx_fee_pre_fork_2_4/4,
+		usd_to_ar_rate/1, usd_to_ar/3, recalculate_usd_to_ar_rate/1, usd_to_ar_pre_fork_2_4/3,
+		get_miner_reward_and_endowment_pool_pre_fork_2_4/1]).
 
 -include_lib("arweave/include/ar.hrl").
 -include_lib("arweave/include/ar_inflation.hrl").

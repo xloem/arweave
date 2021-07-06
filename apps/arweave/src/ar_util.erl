@@ -148,9 +148,9 @@ genesis_wallets() ->
 	{ok, Bin} = file:read_file("data/genesis_wallets.csv"),
 	lists:map(
 		fun(Line) ->
-			[PubKey, RawQty] = string:tokens(Line, ","),
+			[Addr, RawQty] = string:tokens(Line, ","),
 			{
-				ar_wallet:to_address(ar_util:decode(PubKey)),
+				ar_util:decode(Addr),
 				erlang:trunc(math:ceil(list_to_integer(RawQty))) * ?WINSTON_PER_AR,
 				<<>>
 			}

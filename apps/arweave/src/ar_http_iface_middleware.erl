@@ -499,9 +499,9 @@ handle(<<"POST">>, [<<"wallet">>], Req, _Pid) ->
 	case check_internal_api_secret(Req) of
 		pass ->
 			WalletAccessCode = ar_util:encode(crypto:strong_rand_bytes(32)),
-			{{_, PubKey}, _} = ar_wallet:new_keyfile(WalletAccessCode),
+			{_, Pub} = ar_wallet:new_keyfile(WalletAccessCode),
 			ResponseProps = [
-				{<<"wallet_address">>, ar_util:encode(ar_wallet:to_address(PubKey))},
+				{<<"wallet_address">>, ar_util:encode(ar_wallet:to_address(Pub))},
 				{<<"wallet_access_code">>, WalletAccessCode}
 			],
 			{200, #{}, ar_serialize:jsonify({ResponseProps}), Req};
@@ -2364,6 +2364,15 @@ post_tx_parse_id(parse_json, {TXID, Req, Body, Timestamp}) ->
 					ar_ignore_registry:remove_temporary(TXID)
 			end,
 			{error, invalid_json, Req};
+		{error, invalid_signature_type} ->
+            case TXID of
+                not_set ->
+                    noop;
+                _ ->
+                    ar_ignore_registry:remove_temporary(TXID),
+					ar_tx_db:put_error_codes(TXID, [<<"invalid_signature_type">>])
+            end,
+            {error, invalid_signature_type, Req};
 		{error, _} ->
 			case TXID of
 				not_set ->

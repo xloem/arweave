@@ -244,19 +244,23 @@ get_block_shadow_from_cache(H) ->
 
 %% @doc Get the current balance of a given wallet address.
 %% The balance returned is in relation to the nodes current wallet list.
-%% @end
-get_balance(Addr) when ?IS_ADDR(Addr) ->
+get_balance({SigType, PubKey}) ->
+	get_balance(ar_wallet:to_address(PubKey, SigType));
+get_balance(Addr) when byte_size(Addr) == 33 orelse byte_size(Addr) == 32 ->
 	ar_wallets:get_balance(Addr);
-get_balance(WalletID) ->
-	get_balance(ar_wallet:to_address(WalletID)).
+get_balance(MaybeRSAPub) ->
+	%% A legacy feature where we may search the public key instead of address.
+	ar_wallets:get_balance(ar_wallet:to_rsa_address(MaybeRSAPub)).
 
 %% @doc Get the last tx id associated with a given wallet address.
 %% Should the wallet not have made a tx the empty binary will be returned.
-%% @end
-get_last_tx(Addr) when ?IS_ADDR(Addr) ->
+get_last_tx({SigType, PubKey}) ->
+	get_last_tx(ar_wallet:to_address(PubKey, SigType));
+get_last_tx(Addr) when byte_size(Addr) == 33 orelse byte_size(Addr) == 32 ->
 	{ok, ar_wallets:get_last_tx(Addr)};
-get_last_tx(WalletID) ->
-	get_last_tx(ar_wallet:to_address(WalletID)).
+get_last_tx(MaybeRSAPub) ->
+	%% A legacy feature where we may search the public key instead of address.
+	get_last_tx(ar_wallet:to_rsa_address(MaybeRSAPub)).
 
 %% @doc Return a map address => {balance, last tx} for the given addresses.
 get_wallets(Addresses) ->

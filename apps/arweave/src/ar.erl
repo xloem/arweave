@@ -5,8 +5,8 @@
 
 -behaviour(application).
 
--export([main/0, main/1, start/0, start/1, start/2, stop/1, stop_dependencies/0,
-		tests/0, tests/1, tests/2, test_ipfs/0, docs/0, start_for_tests/0, shutdown/1,
+-export([main/0, main/1, start/0, start/1, start/2, stop/1, stop_dependencies/0, tests/0,
+		tests/1, tests/2, test_ipfs/0, docs/0, start_for_tests/0, shutdown/1,
 		console/1, console/2]).
 
 -include_lib("arweave/include/ar.hrl").
@@ -21,6 +21,8 @@
 	[
 		ar,
 		ar_sync_buckets,
+		ar_wallet_tests,
+		ar_node_tests,
 		ar_chunk_storage,
 		ar_poa,
 		ar_packing_server,
@@ -44,7 +46,6 @@
 		ar_semaphore_tests,
 		ar_tx_db,
 		ar_tx,
-		ar_wallet,
 		ar_serialize,
 		ar_block,
 		ar_difficulty_tests,
@@ -54,7 +55,6 @@
 		ar_tx_blacklist_tests,
 		ar_data_sync_tests,
 		ar_header_sync_tests,
-		ar_node_tests,
 		ar_fork_recovery_tests,
 		ar_mine,
 		ar_tx_replay_pool_tests,

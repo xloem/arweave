@@ -10,7 +10,8 @@
 		delete_blacklisted_tx/1, get_free_space/1, lookup_tx_filename/1,
 		wallet_list_filepath/1, tx_filepath/1, tx_data_filepath/1, read_tx_file/1,
 		read_migrated_v1_tx_file/1, ensure_directories/1, write_file_atomic/2,
-		write_term/2, write_term/3, read_term/1, read_term/2, delete_term/1, is_file/1]).
+		write_term/2, write_term/3, read_term/1, read_term/2, delete_term/1, is_file/1,
+		migrate_tx_record/1, migrate_tx_records/1]).
 
 -export([init/1, handle_cast/2, handle_call/3, handle_info/2, terminate/2]).
 
@@ -225,7 +226,7 @@ delete_blacklisted_tx(Hash) ->
 		[{_, DB}] ->
 			case ar_kv:get(DB, Hash) of
 				{ok, V} ->
-					TX = binary_to_term(V),
+					TX = migrate_tx_record(binary_to_term(V)),
 					case TX#tx.format == 1 andalso TX#tx.data_size > 0 of
 						true ->
 							ar_data_sync:request_tx_data_removal(Hash),
@@ -265,6 +266,25 @@ delete_blacklisted_tx(Hash) ->
 					end
 			end
 	end.
+
+%% @doc Convert the stored tx record to its latest state in the code
+%% (assign the default values to all missing fields).
+migrate_tx_record(#tx{} = TX) ->
+	TX;
+migrate_tx_record({tx, Format, ID, LastTX, Owner, Tags, Target, Quantity, Data,
+		DataSize, DataTree, DataRoot, Signature, Reward}) ->
+	#tx{ format = Format, id = ID, last_tx = LastTX,
+			owner = Owner, tags = Tags, target = Target, quantity = Quantity,
+			data = Data, data_size = DataSize, data_root = DataRoot,
+			signature = Signature, signature_type = ?DEFAULT_KEY_TYPE,
+			reward = Reward, data_tree = DataTree }.
+
+%% @doc Convert the stored tx records to its latest state in the code
+%% (assign the default values to all missing fields).
+migrate_tx_records([]) ->
+	[];
+migrate_tx_records([TX | TXs]) ->
+	[migrate_tx_record(TX) | migrate_tx_records(TXs)].
 
 write_tx(TXs) when is_list(TXs) ->
 	lists:foldl(
@@ -409,7 +429,7 @@ read_tx2(ID) ->
 				not_found ->
 					read_tx_from_file(ID);
 				{ok, Binary} ->
-					TX = binary_to_term(Binary),
+					TX = migrate_tx_record(binary_to_term(Binary)),
 					case TX#tx.format == 1 andalso TX#tx.data_size > 0 of
 						true ->
 							case read_tx_data_from_kv_storage(TX#tx.id) of

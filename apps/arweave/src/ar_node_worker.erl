@@ -9,10 +9,12 @@
 %%% @end
 -module(ar_node_worker).
 
--export([start_link/0, calculate_delay/1, is_mempool_or_block_cache_tx/1]).
-
--export([init/1, handle_cast/2, handle_info/2, terminate/2, tx_mempool_size/1,
+-export([start_link/0, calculate_delay/1, is_mempool_or_block_cache_tx/1,
 		tx_id_prefix/1]).
+
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
+		tx_mempool_size/1]).
+-export([set_reward_addr/1]).
 
 -include_lib("arweave/include/ar.hrl").
 -include_lib("arweave/include/ar_config.hrl").
@@ -44,6 +46,9 @@ tx_id_prefix(TXID) ->
 %% block cache (the last ?STORE_BLOCKS_BEHIND_CURRENT blocks).
 is_mempool_or_block_cache_tx(TXID) ->
 	ets:match_object(tx_prefixes, {tx_id_prefix(TXID), TXID}) /= [].
+
+set_reward_addr(Addr) ->
+	gen_server:call(?MODULE, {set_reward_addr, Addr}).
 
 %%%===================================================================
 %%% Generic server callbacks.
@@ -138,7 +143,8 @@ load_mempool() ->
 			Map =
 				maps:map(
 					fun(TXID, {TX, Status}) ->
-						ets:insert(node_state, {{tx, TXID}, TX}),
+						ets:insert(node_state, {{tx, TXID},
+								ar_storage:migrate_tx_record(TX)}),
 						ets:insert(tx_prefixes, {tx_id_prefix(TXID), TXID}),
 						Status
 					end,
@@ -146,7 +152,7 @@ load_mempool() ->
 				),
 			MempoolSize = maps:fold(
 				fun(_, {TX, _}, Acc) ->
-					increase_mempool_size(Acc, TX)
+					increase_mempool_size(Acc, ar_storage:migrate_tx_record(TX))
 				end,
 				{0, 0},
 				TXs
@@ -155,7 +161,9 @@ load_mempool() ->
 				maps:fold(
 					fun(TXID, {TX, Status}, Acc) ->
 						Timestamp = get_or_create_tx_timestamp(TXID),
-						gb_sets:add_element({{ar_tx:utility(TX), Timestamp}, TXID, Status}, Acc)
+						TX2 = ar_storage:migrate_tx_record(TX),
+						gb_sets:add_element({{ar_tx:utility(TX2), Timestamp},
+								TXID, Status}, Acc)
 					end,
 					gb_sets:new(),
 					TXs
@@ -166,7 +174,9 @@ load_mempool() ->
 							Acc;
 						(TXID, {TX, _Status}, Acc) ->
 							Timestamp = get_or_create_tx_timestamp(TXID),
-							gb_sets:add_element({{ar_tx:utility(TX), Timestamp}, TXID}, Acc)
+							TX2 = ar_storage:migrate_tx_record(TX),
+							gb_sets:add_element({{ar_tx:utility(TX2), Timestamp},
+									TXID}, Acc)
 					end,
 					gb_sets:new(),
 					TXs
@@ -227,6 +237,9 @@ start_io_threads() ->
 			ar_mine:io_thread(SearchInRocksDB)
 		end)
 		|| _ <- lists:seq(1, Config#config.io_threads)].
+
+handle_call({set_reward_addr, Addr}, _From, State) ->
+	{reply, ok, State#{ reward_addr => Addr }}.
 
 handle_cast(process_task_queue, #{ task_queue := TaskQueue } = State) ->
 	RunTask =

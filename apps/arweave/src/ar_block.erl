@@ -129,12 +129,13 @@ do_generate_hash_list_for_block(IndepHash, [_ | Rest]) ->
 block_field_size_limit(B = #block { reward_addr = unclaimed }) ->
 	block_field_size_limit(B#block { reward_addr = <<>> });
 block_field_size_limit(B) ->
-	DiffBytesLimit = case ar_fork:height_1_8() of
-		H when B#block.height >= H ->
-			78;
-		_ ->
-			10
-	end,
+	DiffBytesLimit =
+		case ar_fork:height_1_8() of
+			Height when B#block.height >= Height ->
+				78;
+			_ ->
+				10
+		end,
 	{ChunkSize, DataPathSize} =
 		case B#block.poa of
 			POA when is_record(POA, poa) ->
@@ -144,6 +145,13 @@ block_field_size_limit(B) ->
 				};
 			_ -> {0, 0}
 		end,
+	RewardAddrSizeLimit =
+		case B#block.height >= ar_fork:height_2_6() of
+			true ->
+				33;
+			_ ->
+				32
+		end,
 	Check = (byte_size(B#block.nonce) =< 512) and
 		(byte_size(B#block.previous_block) =< 48) and
 		(byte_size(integer_to_binary(B#block.timestamp)) =< ?TIMESTAMP_FIELD_SIZE_LIMIT) and
@@ -152,7 +160,7 @@ block_field_size_limit(B) ->
 		(byte_size(integer_to_binary(B#block.height)) =< 20) and
 		(byte_size(B#block.hash) =< 48) and
 		(byte_size(B#block.indep_hash) =< 48) and
-		(byte_size(B#block.reward_addr) =< 32) and
+		(byte_size(B#block.reward_addr) =< RewardAddrSizeLimit) and
 		validate_tags_size(B) and
 		(byte_size(integer_to_binary(B#block.weave_size)) =< 64) and
 		(byte_size(integer_to_binary(B#block.block_size)) =< 64) and

@@ -1,4 +1,5 @@
-%%% @doc The module contains serialisation/deserialisation utility functions.
+%%% @doc The module contains the serialization and deserialization utilities for the
+%%% various protocol entitities - transactions, blocks, proofs, etc
 -module(ar_serialize).
 
 -export([json_struct_to_block/1, block_to_json_struct/1,
@@ -15,7 +16,8 @@
 		block_index_to_json_struct/1, json_struct_to_block_index/1,
 		jsonify/1, dejsonify/1, json_decode/1, json_decode/2,
 		query_to_json_struct/1, json_struct_to_query/1,
-		chunk_proof_to_json_map/1, json_map_to_chunk_proof/1, encode_int/2]).
+		chunk_proof_to_json_map/1, json_map_to_chunk_proof/1, encode_int/2,
+		signature_type_to_binary/1, binary_to_signature_type/1]).
 
 -include_lib("arweave/include/ar.hrl").
 -include_lib("eunit/include/eunit.hrl").
@@ -94,13 +96,14 @@ encode_transactions([TX | TXs], Encoded, N) ->
 encode_tx(#tx{ format = Format, id = TXID, last_tx = LastTX, owner = Owner,
 		tags = Tags, target = Target, quantity = Quantity, data = Data,
 		data_size = DataSize, data_root = DataRoot, signature = Signature,
-		reward = Reward }) ->
+		reward = Reward, signature_type = SignatureType }) ->
 	<< Format:8, TXID:32/binary,
 			(encode_bin(LastTX, 8))/binary, (encode_bin(Owner, 16))/binary,
 			(encode_bin(Target, 8))/binary, (encode_int(Quantity, 8))/binary,
 			(encode_int(DataSize, 16))/binary, (encode_bin(DataRoot, 8))/binary,
 			(encode_bin(Signature, 16))/binary, (encode_int(Reward, 8))/binary,
-			(encode_bin(Data, 24))/binary, (encode_tx_tags(Tags))/binary >>.
+			(encode_bin(Data, 24))/binary, (encode_tx_tags(Tags))/binary,
+			(encode_signature_type(SignatureType))/binary >>.
 
 encode_tx_tags(Tags) ->
 	encode_tx_tags(Tags, [], 0).
@@ -112,6 +115,13 @@ encode_tx_tags([{Name, Value} | Tags], Encoded, N) ->
 	TagValueSize = byte_size(Value),
 	Tag = << TagNameSize:16, TagValueSize:16, Name/binary, Value/binary >>,
 	encode_tx_tags(Tags, [Tag | Encoded], N + 1).
+
+encode_signature_type(?DEFAULT_KEY_TYPE) ->
+	<<>>;
+encode_signature_type({?ECDSA_SIGN_ALG, secp256k1}) ->
+	<< 1:8 >>;
+encode_signature_type({?EDDSA_SIGN_ALG, ed25519}) ->
+	<< 2:8 >>.
 
 binary_to_block(<< H:48/binary, PrevHSize:8, PrevH:PrevHSize/binary,
 		TSSize:8, TS:(TSSize * 8),
@@ -223,12 +233,17 @@ parse_tx(<< Format:8, TXID:32/binary,
 	case parse_tx_tags(Rest) of
 		{error, Reason} ->
 			{error, Reason};
-		{ok, Tags} ->
-			{ok, #tx{ format = Format, id = TXID, last_tx = LastTX,
-					owner = Owner, target = Target, quantity = Quantity,
-					data_size = DataSize, data_root = DataRoot,
-					signature = Signature, reward = Reward, data = Data,
-					tags = Tags }}
+		{ok, Tags, Rest2} ->
+			case parse_signature_type(Rest2) of
+				{ok, SigType} ->
+					{ok, #tx{ format = Format, id = TXID, last_tx = LastTX,
+							owner = Owner, target = Target, quantity = Quantity,
+							data_size = DataSize, data_root = DataRoot,
+							signature = Signature, reward = Reward, data = Data,
+							tags = Tags, signature_type = SigType }};
+				{error, Reason} ->
+					{error, Reason}
+			end
 	end;
 parse_tx(_Bin) ->
 	{error, invalid_tx_input}.
@@ -238,14 +253,23 @@ parse_tx_tags(<< TagsLen:16, Rest/binary >>) when TagsLen =< 2048 ->
 parse_tx_tags(_Bin) ->
 	{error, invalid_tx_tags_input}.
 
-parse_tx_tags(0, <<>>, Tags) ->
-	{ok, Tags};
+parse_tx_tags(0, Rest, Tags) ->
+	{ok, Tags, Rest};
 parse_tx_tags(N, << TagNameSize:16, TagValueSize:16,
 		TagName:TagNameSize/binary, TagValue:TagValueSize/binary, Rest/binary >>, Tags)
 		when N > 0 ->
 	parse_tx_tags(N - 1, Rest, [{TagName, TagValue} | Tags]);
 parse_tx_tags(_N, _Bin, _Tags) ->
 	{error, invalid_tx_tag_input}.
+
+parse_signature_type(<<>>) ->
+	{ok, ?DEFAULT_KEY_TYPE};
+parse_signature_type(<< 1:8 >>) ->
+	{ok, {?ECDSA_SIGN_ALG, secp256k1}};
+parse_signature_type(<< 2:8 >>) ->
+	{ok, {?EDDSA_SIGN_ALG, ed25519}};
+parse_signature_type(_Rest) ->
+	{error, invalid_input}.
 
 tx_to_binary(TX) ->
 	Bin = encode_tx(TX),
@@ -653,6 +677,7 @@ tx_to_json_struct(
 		data = Data,
 		reward = Reward,
 		signature = Sig,
+		signature_type = SigType,
 		data_size = DataSize,
 		data_root = DataRoot
 	}) ->
@@ -688,7 +713,8 @@ tx_to_json_struct(
 			{data_tree, []},
 			{data_root, ar_util:encode(DataRoot)},
 			{reward, integer_to_binary(Reward)},
-			{signature, ar_util:encode(Sig)}
+			{signature, ar_util:encode(Sig)},
+			{signature_type, signature_type_to_binary(SigType)}
 		]
 	}.
 
@@ -744,6 +770,7 @@ json_struct_to_tx(TXStruct, ComputeDataSize) ->
 		data = Data,
 		reward = binary_to_integer(find_value(<<"reward">>, TXStruct)),
 		signature = ar_util:decode(find_value(<<"signature">>, TXStruct)),
+		signature_type = binary_to_signature_type(find_value(<<"signature_type">>, TXStruct)),
 		data_size = parse_data_size(Format, TXStruct, Data, ComputeDataSize),
 		data_root =
 			case find_value(<<"data_root">>, TXStruct) of
@@ -958,6 +985,23 @@ json_map_to_chunk_proof(JSON) ->
 			Map2#{ offset => binary_to_integer(Offset) }
 	end.
 
+signature_type_to_binary(SigType) ->
+	case SigType of
+		{?RSA_SIGN_ALG, 65537} -> <<"PS256_65537">>;
+		{?ECDSA_SIGN_ALG, secp256k1} -> <<"ES256K">>;
+		{?EDDSA_SIGN_ALG, ed25519} -> <<"Ed25519">>
+	end.
+
+binary_to_signature_type(List) ->
+	case List of
+		undefined -> {?RSA_SIGN_ALG, 65537};
+		<<"PS256_65537">> -> {?RSA_SIGN_ALG, 65537};
+		<<"ES256K">> -> {?ECDSA_SIGN_ALG, secp256k1};
+		<<"Ed25519">> -> {?EDDSA_SIGN_ALG, ed25519};
+		%% For backwards-compatibility.
+		_ -> {?RSA_SIGN_ALG, 65537}
+	end.
+
 %%% Tests: ar_serialize
 
 block_to_binary_test() ->
@@ -987,7 +1031,7 @@ test_block_to_binary([Fixture | Fixtures], TXFixtureDir) ->
 		lists:foldl(
 			fun(TXFixture, Acc) ->
 				{ok, TXBin} = file:read_file(filename:join(TXFixtureDir, TXFixture)),
-				TX = binary_to_term(TXBin),
+				TX = ar_storage:migrate_tx_record(binary_to_term(TXBin)),
 				maps:put(TX#tx.id, TX, Acc)
 			end,
 			#{},
@@ -1002,6 +1046,12 @@ test_block_to_binary([Fixture | Fixtures], TXFixtureDir) ->
 	TXIDs = [TX#tx.id || TX <- BlockTXs],
 	B6 = B#block{ txs = TXIDs },
 	test_block_to_binary(B6),
+	B7 = B#block{ txs = [TX#tx{ signature_type = {?ECDSA_SIGN_ALG, secp256k1} }
+			|| TX <- BlockTXs] },
+	test_block_to_binary(B7),
+	B8 = B#block{ txs = [TX#tx{ signature_type = {?EDDSA_SIGN_ALG, ed25519} }
+			|| TX <- BlockTXs] },
+	test_block_to_binary(B8),
 	test_block_to_binary(Fixtures, TXFixtureDir).
 
 test_block_to_binary(B) ->
@@ -1085,10 +1135,11 @@ block_roundtrip_test() ->
 tx_roundtrip_test() ->
 	TXBase = ar_tx:new(<<"test">>),
 	TX =
-		TXBase#tx {
+		TXBase#tx{
 			format = 2,
 			tags = [{<<"Name1">>, <<"Value1">>}],
-			data_root = << 0:256 >>
+			data_root = << 0:256 >>,
+			signature_type = ?DEFAULT_KEY_TYPE
 		},
 	JsonTX = jsonify(tx_to_json_struct(TX)),
 	?assertEqual(
