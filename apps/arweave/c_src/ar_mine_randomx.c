@@ -3,6 +3,8 @@
 #include "randomx.h"
 #include "ar_mine_randomx.h"
 #include <gmp.h>
+#include <openssl/sha.h>
+// TODO remove slow sha-256 impl
 #include "sha-256.h"
 #include "randomx_long_with_entropy.h"
 #include "feistel_msgsize_key_cipher.h"
@@ -21,7 +23,8 @@ static ErlNifFunc nif_funcs[] = {
 	{"hash_fast_long_with_entropy_nif", 6, hash_fast_long_with_entropy_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
 	{"hash_light_long_with_entropy_nif", 6, hash_light_long_with_entropy_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
 	{"bulk_hash_fast_long_with_entropy_nif", 14, bulk_hash_fast_long_with_entropy_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
-	{"release_state_nif", 1, release_state_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND}
+	{"release_state_nif", 1, release_state_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
+	{"vdf_sha2_nif", 3, vdf_sha2_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND}
 };
 
 ERL_NIF_INIT(ar_mine_randomx, nif_funcs, load, NULL, NULL, NULL);
@@ -1191,6 +1194,55 @@ static ERL_NIF_TERM release_state_nif(ErlNifEnv* envPtr, int argc, const ERL_NIF
 	release_randomx(statePtr);
 	enif_rwlock_rwunlock(statePtr->lockPtr);
 	return enif_make_atom(envPtr, "ok");
+}
+
+static ERL_NIF_TERM vdf_sha2_nif(ErlNifEnv* envPtr, int argc, const ERL_NIF_TERM argv[])
+{
+	ErlNifBinary WalletBinary, PrevState;
+	int hashingIterations;
+
+	if (argc != 3) {
+		return enif_make_badarg(envPtr);
+	}
+	if (!enif_inspect_binary(envPtr, argv[0], &WalletBinary)) {
+		return enif_make_badarg(envPtr);
+	}
+	if (WalletBinary.size != WALLET_SIZE) {
+		return enif_make_badarg(envPtr);
+	}
+	if (!enif_inspect_binary(envPtr, argv[1], &PrevState)) {
+		return enif_make_badarg(envPtr);
+	}
+	if (PrevState.size != VDF_SHA_HASH_SIZE) {
+		return enif_make_badarg(envPtr);
+	}
+	if (!enif_get_int(envPtr, argv[2], &hashingIterations)) {
+		return enif_make_badarg(envPtr);
+	}
+
+	unsigned char walletBuffer[WALLET_SIZE];
+	unsigned char temp_result[VDF_SHA_HASH_SIZE];
+	// ensure 1 L1 cache page used
+	// no access to heap, except of 0-iteration
+	memcpy(walletBuffer, WalletBinary.data, WALLET_SIZE);
+
+	{
+		SHA256_CTX sha256;
+		SHA256_Init(&sha256);
+		SHA256_Update(&sha256, walletBuffer, WALLET_SIZE);
+		SHA256_Update(&sha256, PrevState.data, VDF_SHA_HASH_SIZE); // -1 memcpy
+		SHA256_Final(temp_result, &sha256);
+	}
+	for(int i = 0; i < hashingIterations; i++) {
+		SHA256_CTX sha256;
+		SHA256_Init(&sha256);
+		SHA256_Update(&sha256, walletBuffer, WALLET_SIZE);
+		SHA256_Update(&sha256, temp_result, VDF_SHA_HASH_SIZE);
+		SHA256_Final(temp_result, &sha256);
+	}
+
+	// return ok_tuple(envPtr, make_output_binary(envPtr, temp_result, VDF_SHA_HASH_SIZE));
+	return make_output_binary(envPtr, temp_result, VDF_SHA_HASH_SIZE);
 }
 
 // Utility functions.

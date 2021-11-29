@@ -12,7 +12,8 @@
 	randomx_decrypt_chunk/4, randomx_decrypt_chunk_2_6/4,
 	hash_fast_long_with_entropy/2,
 	hash_light_long_with_entropy/2,
-	bulk_hash_fast_long_with_entropy/13
+	bulk_hash_fast_long_with_entropy/13,
+	vdf_sha2/2
 ]).
 
 %% These exports are required for the DEBUG mode, where these functions are unused.
@@ -25,7 +26,8 @@
 	hash_fast_verify_nif/6,
 	randomx_encrypt_chunk_nif/7, randomx_decrypt_chunk_nif/8,
 	hash_fast_long_with_entropy_nif/6, hash_light_long_with_entropy_nif/6,
-		bulk_hash_fast_long_with_entropy_nif/14
+	bulk_hash_fast_long_with_entropy_nif/14,
+	vdf_sha2_nif/3
 ]).
 
 -include_lib("arweave/include/ar.hrl").
@@ -320,6 +322,13 @@ bulk_hash_fast_long_with_entropy_nif(
 
 release_state_nif(_State) ->
 	erlang:nif_error(nif_not_loaded).
+
+% not actually randomx, but it's much more simple to put it here
+vdf_sha2_nif(_WalletBinary, _PrevState, _Iterations) ->
+	erlang:nif_error(nif_not_loaded).
+
+vdf_sha2(WalletBinary, PrevState) ->
+	vdf_sha2_nif(WalletBinary, PrevState, ?VDF_DIFFICULTY).
 
 init_nif() ->
 	PrivDir = code:priv_dir(arweave),
