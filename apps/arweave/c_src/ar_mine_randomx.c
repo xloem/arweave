@@ -4,7 +4,6 @@
 #include "ar_mine_randomx.h"
 #include <gmp.h>
 #include <openssl/sha.h>
-// TODO remove slow sha-256 impl
 #include "sha-256.h"
 #include "randomx_long_with_entropy.h"
 #include "feistel_msgsize_key_cipher.h"
@@ -1216,7 +1215,7 @@ static ERL_NIF_TERM vdf_sha2_nif(ErlNifEnv* envPtr, int argc, const ERL_NIF_TERM
 	if (PrevState.size != VDF_SHA_HASH_SIZE) {
 		return enif_make_badarg(envPtr);
 	}
-	if (!enif_get_int(envPtr, argv[2], &hashingIterations)) {
+	if (!enif_get_int(envPtr, argv[9], &hashingIterations)) {
 		return enif_make_badarg(envPtr);
 	}
 
@@ -1241,8 +1240,7 @@ static ERL_NIF_TERM vdf_sha2_nif(ErlNifEnv* envPtr, int argc, const ERL_NIF_TERM
 		SHA256_Final(temp_result, &sha256);
 	}
 
-	// return ok_tuple(envPtr, make_output_binary(envPtr, temp_result, VDF_SHA_HASH_SIZE));
-	return make_output_binary(envPtr, temp_result, VDF_SHA_HASH_SIZE);
+	return ok_tuple(envPtr, make_output_binary(envPtr, temp_result, VDF_SHA_HASH_SIZE));
 }
 
 // Utility functions.
