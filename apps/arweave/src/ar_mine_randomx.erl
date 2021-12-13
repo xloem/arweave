@@ -27,7 +27,10 @@
 	randomx_encrypt_chunk_nif/7, randomx_decrypt_chunk_nif/8,
 	hash_fast_long_with_entropy_nif/6, hash_light_long_with_entropy_nif/6,
 	bulk_hash_fast_long_with_entropy_nif/14,
-	vdf_sha2_nif/3
+	vdf_sha2_nif/3,
+	vdf_randomx_create_vm_nif/5,
+	vdf_randomx_nif/5,
+	vdf_parallel_sha_randomx_nif/6
 ]).
 
 -include_lib("arweave/include/ar.hrl").
@@ -329,6 +332,15 @@ vdf_sha2_nif(_WalletBinary, _PrevState, _Iterations) ->
 
 vdf_sha2(WalletBinary, PrevState) ->
 	vdf_sha2_nif(WalletBinary, PrevState, ?VDF_DIFFICULTY).
+
+vdf_randomx_create_vm_nif(_State, _Fast, _JIT, _LargePages, _HardwareAES) ->
+	erlang:nif_error(nif_not_loaded).
+vdf_randomx_nif(_WalletBinary, _PrevState, _Iterations, _State, _Vm) ->
+	erlang:nif_error(nif_not_loaded).
+vdf_parallel_sha_randomx_nif(_WalletBinary, _PrevState, _IterationsSha, _IterationsRandomx, _State, _Vm) ->
+	erlang:nif_error(nif_not_loaded).
+
+% TODO expose non-nif API
 
 init_nif() ->
 	PrivDir = code:priv_dir(arweave),

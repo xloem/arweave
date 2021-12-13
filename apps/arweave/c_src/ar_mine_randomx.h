@@ -10,9 +10,6 @@ typedef enum {
 const int BIG_NUM_SIZE = 32;
 typedef unsigned char bigInt[32];
 
-const int WALLET_SIZE = 32;
-const int VDF_SHA_HASH_SIZE = 32;
-
 struct workerThread {
 	ErlNifTid threadId;
 	ErlNifThreadOpts *optsPtr;
@@ -29,6 +26,10 @@ struct state {
 	randomx_cache*    cachePtr;
 };
 
+struct wrap_randomx_vm {
+	randomx_vm*       vmPtr;
+};
+
 const int ARWEAVE_INPUT_DATA_SIZE = 48;
 const int ARWEAVE_HASH_SIZE = 48;
 const int SPORA_SUBSPACES_COUNT = 1024;
@@ -36,6 +37,7 @@ const int SPORA_SEARCH_SPACE_SHARE = 10;
 
 static int load(ErlNifEnv*, void**, ERL_NIF_TERM);
 static void state_dtor(ErlNifEnv*, void*);
+static void vdf_randomx_vm_dtor(ErlNifEnv*, void*);
 static void release_randomx(struct state*);
 
 static ERL_NIF_TERM init_fast_nif(ErlNifEnv*, int, const ERL_NIF_TERM []);
@@ -63,6 +65,9 @@ static ERL_NIF_TERM bulk_hash_fast_long_with_entropy_nif(ErlNifEnv*, int, const 
 static ERL_NIF_TERM release_state_nif(ErlNifEnv*, int, const ERL_NIF_TERM []);
 
 static ERL_NIF_TERM vdf_sha2_nif(ErlNifEnv*, int, const ERL_NIF_TERM []);
+static ERL_NIF_TERM vdf_randomx_create_vm_nif(ErlNifEnv*, int, const ERL_NIF_TERM []);
+static ERL_NIF_TERM vdf_randomx_nif(ErlNifEnv*, int, const ERL_NIF_TERM []);
+static ERL_NIF_TERM vdf_parallel_sha_randomx_nif(ErlNifEnv*, int, const ERL_NIF_TERM []);
 
 static ERL_NIF_TERM solution_tuple(ErlNifEnv*, ERL_NIF_TERM);
 static ERL_NIF_TERM ok_tuple(ErlNifEnv*, ERL_NIF_TERM);

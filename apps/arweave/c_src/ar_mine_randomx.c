@@ -7,8 +7,10 @@
 #include "sha-256.h"
 #include "randomx_long_with_entropy.h"
 #include "feistel_msgsize_key_cipher.h"
+#include "vdf.h"
 
 ErlNifResourceType* stateType;
+ErlNifResourceType* vdfRandomxVmType;
 
 static ErlNifFunc nif_funcs[] = {
 	{"init_fast_nif", 4, init_fast_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
@@ -23,7 +25,10 @@ static ErlNifFunc nif_funcs[] = {
 	{"hash_light_long_with_entropy_nif", 6, hash_light_long_with_entropy_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
 	{"bulk_hash_fast_long_with_entropy_nif", 14, bulk_hash_fast_long_with_entropy_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
 	{"release_state_nif", 1, release_state_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
-	{"vdf_sha2_nif", 3, vdf_sha2_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND}
+	{"vdf_sha2_nif", 3, vdf_sha2_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
+	{"vdf_randomx_create_vm_nif", 5, vdf_randomx_create_vm_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
+	{"vdf_randomx_nif", 5, vdf_randomx_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
+	{"vdf_parallel_sha_randomx_nif", 6, vdf_parallel_sha_randomx_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND}
 };
 
 ERL_NIF_INIT(ar_mine_randomx, nif_funcs, load, NULL, NULL, NULL);
@@ -34,9 +39,14 @@ static int load(ErlNifEnv* envPtr, void** priv, ERL_NIF_TERM info)
 	stateType = enif_open_resource_type(envPtr, NULL, "state", state_dtor, flags, NULL);
 	if (stateType == NULL) {
 		return 1;
-	} else {
-		return 0;
 	}
+
+	vdfRandomxVmType = enif_open_resource_type(envPtr, NULL, "vdf_randomx_vm_type", vdf_randomx_vm_dtor, flags, NULL);
+	if (vdfRandomxVmType == NULL) {
+		return 1;
+	}
+
+	return 0;
 }
 
 static void state_dtor(ErlNifEnv* envPtr, void* objPtr)
@@ -45,6 +55,13 @@ static void state_dtor(ErlNifEnv* envPtr, void* objPtr)
 
 	release_randomx(statePtr);
 	enif_rwlock_destroy(statePtr->lockPtr);
+}
+
+static void vdf_randomx_vm_dtor(ErlNifEnv* envPtr, void* objPtr)
+{
+	struct wrap_randomx_vm *wrap = (struct wrap_randomx_vm *) objPtr;
+
+	randomx_destroy_vm(wrap->vmPtr);
 }
 
 static void release_randomx(struct state *statePtr)
@@ -319,7 +336,8 @@ static ERL_NIF_TERM bulk_hash_fast_nif(ErlNifEnv* envPtr, int argc, const ERL_NI
 	unsigned char nonce[RANDOMX_HASH_SIZE];
 	unsigned char prevNonce[RANDOMX_HASH_SIZE];
 	unsigned char segment[RANDOMX_HASH_SIZE + ARWEAVE_INPUT_DATA_SIZE];
-	int hashingIterations, pidCount, proxyPIDCount;
+	int hashingIterations;
+	unsigned int pidCount, proxyPIDCount;
 	ErlNifPid *pids, *proxyPIDs;
 
 	mpz_t mpzH, mpzSearchSpaceUpperBound;
@@ -897,7 +915,8 @@ static ERL_NIF_TERM bulk_hash_fast_long_with_entropy_nif(ErlNifEnv* envPtr, int 
 	unsigned char nonce[RANDOMX_HASH_SIZE];
 	unsigned char prevNonce[RANDOMX_HASH_SIZE];
 	unsigned char segment[RANDOMX_HASH_SIZE + ARWEAVE_INPUT_DATA_SIZE];
-	int hashingIterations, pidCount, proxyPIDCount;
+	int hashingIterations;
+	unsigned int pidCount, proxyPIDCount;
 	ErlNifPid *pids, *proxyPIDs;
 
 	mpz_t mpzH, mpzSearchSpaceUpperBound;
@@ -1197,7 +1216,7 @@ static ERL_NIF_TERM release_state_nif(ErlNifEnv* envPtr, int argc, const ERL_NIF
 
 static ERL_NIF_TERM vdf_sha2_nif(ErlNifEnv* envPtr, int argc, const ERL_NIF_TERM argv[])
 {
-	ErlNifBinary WalletBinary, PrevState;
+	ErlNifBinary WalletBinary, Seed;
 	int hashingIterations;
 
 	if (argc != 3) {
@@ -1209,36 +1228,191 @@ static ERL_NIF_TERM vdf_sha2_nif(ErlNifEnv* envPtr, int argc, const ERL_NIF_TERM
 	if (WalletBinary.size != WALLET_SIZE) {
 		return enif_make_badarg(envPtr);
 	}
-	if (!enif_inspect_binary(envPtr, argv[1], &PrevState)) {
+	if (!enif_inspect_binary(envPtr, argv[1], &Seed)) {
 		return enif_make_badarg(envPtr);
 	}
-	if (PrevState.size != VDF_SHA_HASH_SIZE) {
+	if (Seed.size != VDF_SHA_HASH_SIZE) {
 		return enif_make_badarg(envPtr);
 	}
-	if (!enif_get_int(envPtr, argv[9], &hashingIterations)) {
+	if (!enif_get_int(envPtr, argv[2], &hashingIterations)) {
 		return enif_make_badarg(envPtr);
 	}
 
-	unsigned char walletBuffer[WALLET_SIZE];
 	unsigned char temp_result[VDF_SHA_HASH_SIZE];
-	// ensure 1 L1 cache page used
-	// no access to heap, except of 0-iteration
-	memcpy(walletBuffer, WalletBinary.data, WALLET_SIZE);
+	vdf_sha2(WalletBinary.data, Seed.data, temp_result, hashingIterations);
 
-	{
-		SHA256_CTX sha256;
-		SHA256_Init(&sha256);
-		SHA256_Update(&sha256, walletBuffer, WALLET_SIZE);
-		SHA256_Update(&sha256, PrevState.data, VDF_SHA_HASH_SIZE); // -1 memcpy
-		SHA256_Final(temp_result, &sha256);
+	return ok_tuple(envPtr, make_output_binary(envPtr, temp_result, VDF_SHA_HASH_SIZE));
+}
+
+static ERL_NIF_TERM vdf_randomx_create_vm_nif(
+	ErlNifEnv* envPtr,
+	int argc,
+	const ERL_NIF_TERM argv[]
+) {
+	ERL_NIF_TERM resource;
+	randomx_flags flags;
+	int fast, jitEnabled, largePagesEnabled, hardwareAESEnabled;
+	struct state* statePtr;
+
+	if (argc != 5) {
+		return enif_make_badarg(envPtr);
 	}
-	for(int i = 0; i < hashingIterations; i++) {
-		SHA256_CTX sha256;
-		SHA256_Init(&sha256);
-		SHA256_Update(&sha256, walletBuffer, WALLET_SIZE);
-		SHA256_Update(&sha256, temp_result, VDF_SHA_HASH_SIZE);
-		SHA256_Final(temp_result, &sha256);
+
+	if (!enif_get_resource(envPtr, argv[0], stateType, (void**) &statePtr)) {
+		return error(envPtr, "failed to read state");
 	}
+	if (!enif_get_int(envPtr, argv[1], &fast)) {
+		return enif_make_badarg(envPtr);
+	}
+	if (!enif_get_int(envPtr, argv[2], &jitEnabled)) {
+		return enif_make_badarg(envPtr);
+	}
+	if (!enif_get_int(envPtr, argv[3], &largePagesEnabled)) {
+		return enif_make_badarg(envPtr);
+	}
+	if (!enif_get_int(envPtr, argv[4], &hardwareAESEnabled)) {
+		return enif_make_badarg(envPtr);
+	}
+
+	flags = RANDOMX_FLAG_DEFAULT;
+	if (fast) {
+		flags |= RANDOMX_FLAG_FULL_MEM;
+	}
+	if (hardwareAESEnabled) {
+		flags |= RANDOMX_FLAG_HARD_AES;
+	}
+	if (jitEnabled) {
+		flags |= RANDOMX_FLAG_JIT;
+	}
+	if (largePagesEnabled) {
+		flags |= RANDOMX_FLAG_LARGE_PAGES;
+	}
+
+	enif_rwlock_rlock(statePtr->lockPtr);
+	if (statePtr->isRandomxReleased != 0) {
+		enif_rwlock_runlock(statePtr->lockPtr);
+		return error(envPtr, "state has been released");
+	}
+	randomx_vm *vmPtr = randomx_create_vm(flags, statePtr->cachePtr, statePtr->datasetPtr);
+	vmPtr = randomx_create_vm(flags, statePtr->cachePtr, statePtr->datasetPtr);
+	if (vmPtr == NULL) {
+		enif_rwlock_runlock(statePtr->lockPtr);
+		return error(envPtr, "randomx_create_vm failed");
+	}
+
+	enif_rwlock_runlock(statePtr->lockPtr);
+
+	struct wrap_randomx_vm *wrapVm = enif_alloc_resource(vdfRandomxVmType, sizeof(struct wrap_randomx_vm));
+	wrapVm->vmPtr = vmPtr;
+	resource = enif_make_resource(envPtr, wrapVm);
+	enif_release_resource(wrapVm);
+
+	return ok_tuple(envPtr, resource);
+}
+
+static ERL_NIF_TERM vdf_randomx_nif(
+	ErlNifEnv* envPtr,
+	int argc,
+	const ERL_NIF_TERM argv[]
+) {
+	struct wrap_randomx_vm *wrapVm;
+	unsigned char hashPtr[RANDOMX_HASH_SIZE];
+	struct state* statePtr;
+
+	ErlNifBinary WalletBinary, Seed;
+	int hashingIterations;
+
+	if (argc != 5) {
+		return enif_make_badarg(envPtr);
+	}
+
+	// copypasted from vdf_sha2_nif
+	if (!enif_inspect_binary(envPtr, argv[0], &WalletBinary)) {
+		return enif_make_badarg(envPtr);
+	}
+	if (WalletBinary.size != WALLET_SIZE) {
+		return enif_make_badarg(envPtr);
+	}
+	if (!enif_inspect_binary(envPtr, argv[1], &Seed)) {
+		return enif_make_badarg(envPtr);
+	}
+	if (Seed.size != RANDOMX_HASH_SIZE) {
+		return enif_make_badarg(envPtr);
+	}
+	if (!enif_get_int(envPtr, argv[2], &hashingIterations)) {
+		return enif_make_badarg(envPtr);
+	}
+	
+
+	if (!enif_get_resource(envPtr, argv[3], stateType, (void**) &statePtr)) {
+		return error(envPtr, "failed to read state");
+	}
+	if (!enif_get_resource(envPtr, argv[4], vdfRandomxVmType, (void**) &wrapVm)) {
+		return error(envPtr, "failed to read vm");
+	}
+
+	unsigned char inputData[WALLET_SIZE+RANDOMX_HASH_SIZE];
+	memcpy(inputData, WalletBinary.data, WALLET_SIZE);
+	memcpy(inputData+WALLET_SIZE, Seed.data, RANDOMX_HASH_SIZE);
+
+	enif_rwlock_rlock(statePtr->lockPtr);
+	randomx_calculate_hash_long(wrapVm->vmPtr, inputData, WALLET_SIZE+VDF_SHA_HASH_SIZE, hashPtr, hashingIterations);
+	enif_rwlock_runlock(statePtr->lockPtr);
+
+	return ok_tuple(envPtr, make_output_binary(envPtr, hashPtr, RANDOMX_HASH_SIZE));
+}
+
+static ERL_NIF_TERM vdf_parallel_sha_randomx_nif(
+	ErlNifEnv* envPtr,
+	int argc,
+	const ERL_NIF_TERM argv[]
+) {
+	struct wrap_randomx_vm *wrapVm;
+	struct state* statePtr;
+
+	ErlNifBinary WalletBinary, Seed;
+	int hashingIterationsSha;
+	int hashingIterationsRandomx;
+
+	if (argc != 6) {
+		return enif_make_badarg(envPtr);
+	}
+
+	// copypasted from vdf_sha2_nif
+	if (!enif_inspect_binary(envPtr, argv[0], &WalletBinary)) {
+		return enif_make_badarg(envPtr);
+	}
+	if (WalletBinary.size != WALLET_SIZE) {
+		return enif_make_badarg(envPtr);
+	}
+	if (!enif_inspect_binary(envPtr, argv[1], &Seed)) {
+		return enif_make_badarg(envPtr);
+	}
+	if (Seed.size != RANDOMX_HASH_SIZE) {
+		return enif_make_badarg(envPtr);
+	}
+	if (!enif_get_int(envPtr, argv[2], &hashingIterationsSha)) {
+		return enif_make_badarg(envPtr);
+	}
+	if (!enif_get_int(envPtr, argv[3], &hashingIterationsRandomx)) {
+		return enif_make_badarg(envPtr);
+	}
+
+	if (!enif_get_resource(envPtr, argv[4], stateType, (void**) &statePtr)) {
+		return error(envPtr, "failed to read state");
+	}
+	if (!enif_get_resource(envPtr, argv[5], vdfRandomxVmType, (void**) &wrapVm)) {
+		return error(envPtr, "failed to read vm");
+	}
+
+	unsigned char randomxInputData[WALLET_SIZE+RANDOMX_HASH_SIZE];
+	memcpy(randomxInputData, WalletBinary.data, WALLET_SIZE);
+	memcpy(randomxInputData+WALLET_SIZE, Seed.data, RANDOMX_HASH_SIZE);
+
+	unsigned char temp_result[VDF_SHA_HASH_SIZE];
+	enif_rwlock_rlock(statePtr->lockPtr);
+	vdf_parallel_sha_randomx(WalletBinary.data, Seed.data, randomxInputData, temp_result, hashingIterationsSha, hashingIterationsRandomx, wrapVm->vmPtr);
+	enif_rwlock_runlock(statePtr->lockPtr);
 
 	return ok_tuple(envPtr, make_output_binary(envPtr, temp_result, VDF_SHA_HASH_SIZE));
 }
