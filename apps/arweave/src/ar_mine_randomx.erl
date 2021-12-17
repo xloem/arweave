@@ -13,7 +13,7 @@
 	hash_fast_long_with_entropy/2,
 	hash_light_long_with_entropy/2,
 	bulk_hash_fast_long_with_entropy/13,
-	vdf_sha2/2
+	vdf_sha2/3
 ]).
 
 %% These exports are required for the DEBUG mode, where these functions are unused.
@@ -27,10 +27,10 @@
 	randomx_encrypt_chunk_nif/7, randomx_decrypt_chunk_nif/8,
 	hash_fast_long_with_entropy_nif/6, hash_light_long_with_entropy_nif/6,
 	bulk_hash_fast_long_with_entropy_nif/14,
-	vdf_sha2_nif/3,
+	vdf_sha2_nif/4,
 	vdf_randomx_create_vm_nif/5,
-	vdf_randomx_nif/5,
-	vdf_parallel_sha_randomx_nif/6
+	vdf_randomx_nif/6,
+	vdf_parallel_sha_randomx_nif/7
 ]).
 
 -include_lib("arweave/include/ar.hrl").
@@ -327,17 +327,17 @@ release_state_nif(_State) ->
 	erlang:nif_error(nif_not_loaded).
 
 % not actually randomx, but it's much more simple to put it here
-vdf_sha2_nif(_WalletBinary, _PrevState, _Iterations) ->
+vdf_sha2_nif(_WalletBinary, _PrevState, _CheckpointCount, _Iterations) ->
 	erlang:nif_error(nif_not_loaded).
 
-vdf_sha2(WalletBinary, PrevState) ->
-	vdf_sha2_nif(WalletBinary, PrevState, ?VDF_DIFFICULTY).
+vdf_sha2(WalletBinary, PrevState, CheckpointCount) ->
+	vdf_sha2_nif(WalletBinary, PrevState, CheckpointCount, ?VDF_DIFFICULTY div CheckpointCount).
 
 vdf_randomx_create_vm_nif(_State, _Fast, _JIT, _LargePages, _HardwareAES) ->
 	erlang:nif_error(nif_not_loaded).
-vdf_randomx_nif(_WalletBinary, _PrevState, _Iterations, _State, _Vm) ->
+vdf_randomx_nif(_WalletBinary, _PrevState, _CheckpointCount, _Iterations, _State, _Vm) ->
 	erlang:nif_error(nif_not_loaded).
-vdf_parallel_sha_randomx_nif(_WalletBinary, _PrevState, _IterationsSha, _IterationsRandomx, _State, _Vm) ->
+vdf_parallel_sha_randomx_nif(_WalletBinary, _PrevState, _CheckpointCount, _IterationsSha, _IterationsRandomx, _State, _Vm) ->
 	erlang:nif_error(nif_not_loaded).
 
 % TODO expose non-nif API
