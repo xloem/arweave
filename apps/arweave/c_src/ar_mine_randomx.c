@@ -11,6 +11,8 @@
 
 ErlNifResourceType* stateType;
 ErlNifResourceType* vdfRandomxVmType;
+// just for split sources
+#include "ar_mine_vdf.h"
 
 static ErlNifFunc nif_funcs[] = {
 	{"init_fast_nif", 4, init_fast_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
@@ -26,9 +28,12 @@ static ErlNifFunc nif_funcs[] = {
 	{"bulk_hash_fast_long_with_entropy_nif", 14, bulk_hash_fast_long_with_entropy_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
 	{"release_state_nif", 1, release_state_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
 	{"vdf_sha2_nif", 4, vdf_sha2_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
+	{"vdf_parallel_sha_verify_nif", 7, vdf_parallel_sha_verify_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
 	{"vdf_randomx_create_vm_nif", 5, vdf_randomx_create_vm_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
 	{"vdf_randomx_nif", 6, vdf_randomx_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
-	{"vdf_parallel_sha_randomx_nif", 7, vdf_parallel_sha_randomx_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND}
+	{"vdf_parallel_randomx_verify_nif", 9, vdf_parallel_randomx_verify_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
+	{"vdf_parallel_sha_randomx_nif", 7, vdf_parallel_sha_randomx_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
+	{"vdf_parallel_sha_randomx_verify_nif", 10, vdf_parallel_sha_randomx_verify_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND}
 };
 
 ERL_NIF_INIT(ar_mine_randomx, nif_funcs, load, NULL, NULL, NULL);
@@ -1212,229 +1217,6 @@ static ERL_NIF_TERM release_state_nif(ErlNifEnv* envPtr, int argc, const ERL_NIF
 	release_randomx(statePtr);
 	enif_rwlock_rwunlock(statePtr->lockPtr);
 	return enif_make_atom(envPtr, "ok");
-}
-
-static ERL_NIF_TERM vdf_sha2_nif(ErlNifEnv* envPtr, int argc, const ERL_NIF_TERM argv[])
-{
-	ErlNifBinary WalletBinary, Seed;
-	int checkpointCount;
-	int hashingIterations;
-
-	if (argc != 4) {
-		return enif_make_badarg(envPtr);
-	}
-	if (!enif_inspect_binary(envPtr, argv[0], &WalletBinary)) {
-		return enif_make_badarg(envPtr);
-	}
-	if (WalletBinary.size != WALLET_SIZE) {
-		return enif_make_badarg(envPtr);
-	}
-	if (!enif_inspect_binary(envPtr, argv[1], &Seed)) {
-		return enif_make_badarg(envPtr);
-	}
-	if (Seed.size != VDF_SHA_HASH_SIZE) {
-		return enif_make_badarg(envPtr);
-	}
-	if (!enif_get_int(envPtr, argv[2], &checkpointCount)) {
-		return enif_make_badarg(envPtr);
-	}
-	if (!enif_get_int(envPtr, argv[3], &hashingIterations)) {
-		return enif_make_badarg(envPtr);
-	}
-
-	unsigned char temp_result[VDF_SHA_HASH_SIZE];
-	size_t outCheckpointSize = VDF_SHA_HASH_SIZE*checkpointCount;
-	ERL_NIF_TERM outputTermCheckpoint;
-	unsigned char* outCheckpoint = enif_make_new_binary(envPtr, outCheckpointSize, &outputTermCheckpoint);
-	vdf_sha2(WalletBinary.data, Seed.data, temp_result, outCheckpoint, checkpointCount, hashingIterations);
-
-	return ok_tuple2(envPtr, make_output_binary(envPtr, temp_result, VDF_SHA_HASH_SIZE), outputTermCheckpoint);
-}
-
-static ERL_NIF_TERM vdf_randomx_create_vm_nif(
-	ErlNifEnv* envPtr,
-	int argc,
-	const ERL_NIF_TERM argv[]
-) {
-	ERL_NIF_TERM resource;
-	randomx_flags flags;
-	int fast, jitEnabled, largePagesEnabled, hardwareAESEnabled;
-	struct state* statePtr;
-
-	if (argc != 5) {
-		return enif_make_badarg(envPtr);
-	}
-
-	if (!enif_get_resource(envPtr, argv[0], stateType, (void**) &statePtr)) {
-		return error(envPtr, "failed to read state");
-	}
-	if (!enif_get_int(envPtr, argv[1], &fast)) {
-		return enif_make_badarg(envPtr);
-	}
-	if (!enif_get_int(envPtr, argv[2], &jitEnabled)) {
-		return enif_make_badarg(envPtr);
-	}
-	if (!enif_get_int(envPtr, argv[3], &largePagesEnabled)) {
-		return enif_make_badarg(envPtr);
-	}
-	if (!enif_get_int(envPtr, argv[4], &hardwareAESEnabled)) {
-		return enif_make_badarg(envPtr);
-	}
-
-	flags = RANDOMX_FLAG_DEFAULT;
-	if (fast) {
-		flags |= RANDOMX_FLAG_FULL_MEM;
-	}
-	if (hardwareAESEnabled) {
-		flags |= RANDOMX_FLAG_HARD_AES;
-	}
-	if (jitEnabled) {
-		flags |= RANDOMX_FLAG_JIT;
-	}
-	if (largePagesEnabled) {
-		flags |= RANDOMX_FLAG_LARGE_PAGES;
-	}
-
-	enif_rwlock_rlock(statePtr->lockPtr);
-	if (statePtr->isRandomxReleased != 0) {
-		enif_rwlock_runlock(statePtr->lockPtr);
-		return error(envPtr, "state has been released");
-	}
-	randomx_vm *vmPtr = randomx_create_vm(flags, statePtr->cachePtr, statePtr->datasetPtr);
-	vmPtr = randomx_create_vm(flags, statePtr->cachePtr, statePtr->datasetPtr);
-	if (vmPtr == NULL) {
-		enif_rwlock_runlock(statePtr->lockPtr);
-		return error(envPtr, "randomx_create_vm failed");
-	}
-
-	enif_rwlock_runlock(statePtr->lockPtr);
-
-	struct wrap_randomx_vm *wrapVm = enif_alloc_resource(vdfRandomxVmType, sizeof(struct wrap_randomx_vm));
-	wrapVm->vmPtr = vmPtr;
-	resource = enif_make_resource(envPtr, wrapVm);
-	enif_release_resource(wrapVm);
-
-	return ok_tuple(envPtr, resource);
-}
-
-static ERL_NIF_TERM vdf_randomx_nif(
-	ErlNifEnv* envPtr,
-	int argc,
-	const ERL_NIF_TERM argv[]
-) {
-	struct wrap_randomx_vm *wrapVm;
-	unsigned char hashPtr[RANDOMX_HASH_SIZE];
-	struct state* statePtr;
-
-	ErlNifBinary WalletBinary, Seed;
-	int checkpointCount;
-	int hashingIterations;
-
-	if (argc != 6) {
-		return enif_make_badarg(envPtr);
-	}
-
-	// copypasted from vdf_sha2_nif
-	if (!enif_inspect_binary(envPtr, argv[0], &WalletBinary)) {
-		return enif_make_badarg(envPtr);
-	}
-	if (WalletBinary.size != WALLET_SIZE) {
-		return enif_make_badarg(envPtr);
-	}
-	if (!enif_inspect_binary(envPtr, argv[1], &Seed)) {
-		return enif_make_badarg(envPtr);
-	}
-	if (Seed.size != RANDOMX_HASH_SIZE) {
-		return enif_make_badarg(envPtr);
-	}
-	if (!enif_get_int(envPtr, argv[2], &checkpointCount)) {
-		return enif_make_badarg(envPtr);
-	}
-	if (!enif_get_int(envPtr, argv[3], &hashingIterations)) {
-		return enif_make_badarg(envPtr);
-	}
-
-	if (!enif_get_resource(envPtr, argv[4], stateType, (void**) &statePtr)) {
-		return error(envPtr, "failed to read state");
-	}
-	if (!enif_get_resource(envPtr, argv[5], vdfRandomxVmType, (void**) &wrapVm)) {
-		return error(envPtr, "failed to read vm");
-	}
-
-	unsigned char inputData[WALLET_SIZE+RANDOMX_HASH_SIZE];
-	memcpy(inputData, WalletBinary.data, WALLET_SIZE);
-	memcpy(inputData+WALLET_SIZE, Seed.data, RANDOMX_HASH_SIZE);
-
-	size_t outCheckpointSize = RANDOMX_HASH_SIZE*checkpointCount;
-	ERL_NIF_TERM outputTermCheckpoint;
-	unsigned char* outCheckpoint = enif_make_new_binary(envPtr, outCheckpointSize, &outputTermCheckpoint);
-	enif_rwlock_rlock(statePtr->lockPtr);
-	vdf_randomx(inputData, hashPtr, outCheckpoint, checkpointCount, hashingIterations, wrapVm->vmPtr);
-	enif_rwlock_runlock(statePtr->lockPtr);
-
-	return ok_tuple2(envPtr, make_output_binary(envPtr, hashPtr, RANDOMX_HASH_SIZE), outputTermCheckpoint);
-}
-
-static ERL_NIF_TERM vdf_parallel_sha_randomx_nif(
-	ErlNifEnv* envPtr,
-	int argc,
-	const ERL_NIF_TERM argv[]
-) {
-	struct wrap_randomx_vm *wrapVm;
-	struct state* statePtr;
-
-	ErlNifBinary WalletBinary, Seed;
-	int checkpointCount;
-	int hashingIterationsSha;
-	int hashingIterationsRandomx;
-
-	if (argc != 7) {
-		return enif_make_badarg(envPtr);
-	}
-
-	// copypasted from vdf_sha2_nif
-	if (!enif_inspect_binary(envPtr, argv[0], &WalletBinary)) {
-		return enif_make_badarg(envPtr);
-	}
-	if (WalletBinary.size != WALLET_SIZE) {
-		return enif_make_badarg(envPtr);
-	}
-	if (!enif_inspect_binary(envPtr, argv[1], &Seed)) {
-		return enif_make_badarg(envPtr);
-	}
-	if (Seed.size != RANDOMX_HASH_SIZE) {
-		return enif_make_badarg(envPtr);
-	}
-	if (!enif_get_int(envPtr, argv[2], &checkpointCount)) {
-		return enif_make_badarg(envPtr);
-	}
-	if (!enif_get_int(envPtr, argv[3], &hashingIterationsSha)) {
-		return enif_make_badarg(envPtr);
-	}
-	if (!enif_get_int(envPtr, argv[4], &hashingIterationsRandomx)) {
-		return enif_make_badarg(envPtr);
-	}
-
-	if (!enif_get_resource(envPtr, argv[5], stateType, (void**) &statePtr)) {
-		return error(envPtr, "failed to read state");
-	}
-	if (!enif_get_resource(envPtr, argv[6], vdfRandomxVmType, (void**) &wrapVm)) {
-		return error(envPtr, "failed to read vm");
-	}
-
-	unsigned char randomxInputData[WALLET_SIZE+RANDOMX_HASH_SIZE];
-	memcpy(randomxInputData, WalletBinary.data, WALLET_SIZE);
-	memcpy(randomxInputData+WALLET_SIZE, Seed.data, RANDOMX_HASH_SIZE);
-
-	unsigned char temp_result[VDF_SHA_HASH_SIZE];
-	size_t outCheckpointSize = (VDF_SHA_HASH_SIZE+RANDOMX_HASH_SIZE)*checkpointCount;
-	ERL_NIF_TERM outputTermCheckpoint;
-	unsigned char* outCheckpoint = enif_make_new_binary(envPtr, outCheckpointSize, &outputTermCheckpoint);
-	enif_rwlock_rlock(statePtr->lockPtr);
-	vdf_parallel_sha_randomx(WalletBinary.data, Seed.data, randomxInputData, temp_result, outCheckpoint, checkpointCount, hashingIterationsSha, hashingIterationsRandomx, wrapVm->vmPtr);
-	enif_rwlock_runlock(statePtr->lockPtr);
-
-	return ok_tuple2(envPtr, make_output_binary(envPtr, temp_result, VDF_SHA_HASH_SIZE), outputTermCheckpoint);
 }
 
 // Utility functions.

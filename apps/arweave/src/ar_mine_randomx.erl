@@ -28,9 +28,12 @@
 	hash_fast_long_with_entropy_nif/6, hash_light_long_with_entropy_nif/6,
 	bulk_hash_fast_long_with_entropy_nif/14,
 	vdf_sha2_nif/4,
+	vdf_parallel_sha_verify_nif/7,
 	vdf_randomx_create_vm_nif/5,
 	vdf_randomx_nif/6,
-	vdf_parallel_sha_randomx_nif/7
+	vdf_parallel_randomx_verify_nif/9,
+	vdf_parallel_sha_randomx_nif/7,
+	vdf_parallel_sha_randomx_verify_nif/10
 ]).
 
 -include_lib("arweave/include/ar.hrl").
@@ -329,17 +332,24 @@ release_state_nif(_State) ->
 % not actually randomx, but it's much more simple to put it here
 vdf_sha2_nif(_WalletBinary, _PrevState, _CheckpointCount, _Iterations) ->
 	erlang:nif_error(nif_not_loaded).
-
+% TODO pick proper VDF and export only that function + verify
 vdf_sha2(WalletBinary, PrevState, CheckpointCount) ->
 	vdf_sha2_nif(WalletBinary, PrevState, CheckpointCount, ?VDF_DIFFICULTY div CheckpointCount).
+vdf_parallel_sha_verify_nif(_WalletBinary, _PrevState, _CheckpointCount, _Iterations, _InCheckpoint, _InRes, _MaxThreadCount) ->
+	erlang:nif_error(nif_not_loaded).
 
 vdf_randomx_create_vm_nif(_State, _Fast, _JIT, _LargePages, _HardwareAES) ->
 	erlang:nif_error(nif_not_loaded).
+
 vdf_randomx_nif(_WalletBinary, _PrevState, _CheckpointCount, _Iterations, _State, _Vm) ->
 	erlang:nif_error(nif_not_loaded).
-vdf_parallel_sha_randomx_nif(_WalletBinary, _PrevState, _CheckpointCount, _IterationsSha, _IterationsRandomx, _State, _Vm) ->
+vdf_parallel_randomx_verify_nif(_WalletBinary, _PrevState, _CheckpointCount, _Iterations, _InCheckpoint, _InRes, _MaxThreadCount, _State, _Vm) ->
 	erlang:nif_error(nif_not_loaded).
 
+vdf_parallel_sha_randomx_nif(_WalletBinary, _PrevState, _CheckpointCount, _IterationsSha, _IterationsRandomx, _State, _Vm) ->
+	erlang:nif_error(nif_not_loaded).
+vdf_parallel_sha_randomx_verify_nif(_WalletBinary, _PrevState, _CheckpointCount, _IterationsSha, _IterationsRandomx, _InCheckpoint, _InRes, _MaxThreadCount, _State, _Vm) ->
+	erlang:nif_error(nif_not_loaded).
 % TODO expose non-nif API
 
 init_nif() ->
