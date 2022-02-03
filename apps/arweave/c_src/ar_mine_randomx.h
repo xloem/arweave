@@ -70,6 +70,9 @@ static ERL_NIF_TERM vdf_randomx_create_vm_nif(ErlNifEnv*, int, const ERL_NIF_TER
 static ERL_NIF_TERM vdf_randomx_nif(ErlNifEnv*, int, const ERL_NIF_TERM []);
 static ERL_NIF_TERM vdf_parallel_sha_randomx_nif(ErlNifEnv*, int, const ERL_NIF_TERM []);
 static ERL_NIF_TERM vdf_parallel_sha_randomx_verify_nif(ErlNifEnv*, int, const ERL_NIF_TERM []);
+static ERL_NIF_TERM vdf_mimc_init_nif(ErlNifEnv*, int, const ERL_NIF_TERM []);
+static ERL_NIF_TERM vdf_mimc_slow_nif(ErlNifEnv*, int, const ERL_NIF_TERM []);
+static ERL_NIF_TERM vdf_mimc_verify_nif(ErlNifEnv*, int, const ERL_NIF_TERM []);
 
 static ERL_NIF_TERM solution_tuple(ErlNifEnv*, ERL_NIF_TERM);
 static ERL_NIF_TERM ok_tuple(ErlNifEnv*, ERL_NIF_TERM);

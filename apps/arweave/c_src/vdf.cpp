@@ -3,6 +3,7 @@
 #include <vector>
 #include <mutex>
 #include <openssl/sha.h>
+#include <gmp.h>
 #include "randomx_long_with_entropy.h"
 #include "vdf.h"
 
@@ -504,4 +505,91 @@ bool vdf_parallel_sha_randomx_verify(unsigned char* walletBuffer, unsigned char*
 	}
 
 	return job.verifyRes;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//    MIMC
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// https://www.youtube.com/watch?v=uXa-NwbRDU0
+
+#define vdf_mimc_len_round_constants 64
+mpz_t vdf_mimc_round_constants[vdf_mimc_len_round_constants];
+
+mpz_t vdf_mimc_modulus;
+mpz_t vdf_mimc_pow;
+mpz_t vdf_mimc_little_fermat_pow;
+void vdf_mimc_init(const mpz_t &modulus, const mpz_t &pow) {
+  mpz_init_set(vdf_mimc_modulus, modulus);
+  mpz_init_set(vdf_mimc_pow, pow);
+  
+  mpz_t t0, t1;
+  mpz_init(t0);
+  mpz_init(t1);
+  
+  mpz_mul_ui(t1, vdf_mimc_modulus, 2);
+  mpz_sub_ui(t0, t1, 1);
+  mpz_div_ui(vdf_mimc_little_fermat_pow, t0, 3);
+  
+  // Note this part is missing in https://www.youtube.com/watch?v=uXa-NwbRDU0 , but it probably can improve protection from
+  //   https://eprint.iacr.org/2016/492.pdf 4.2 Security analysis -> Interpolation Attack
+  mpz_t FORTYTWO;
+  mpz_init(FORTYTWO);
+  mpz_set_ui(FORTYTWO, 42);
+  for (unsigned long i = 0; i < vdf_mimc_len_round_constants; i++) {
+    mpz_init(vdf_mimc_round_constants[i]);
+    mpz_ui_pow_ui(t0, i, 7);
+    mpz_xor(vdf_mimc_round_constants[i], t0, FORTYTWO);
+  }
+}
+
+void vdf_mimc_import(unsigned char* seed, unsigned char* out) {
+  mpz_t t0;
+  mpz_init(t0);
+  mpz_t input;
+  // MSB [0]
+  mpz_import(input, VDF_MIMC_SIZE, 1, sizeof(seed[0]), 0, 0, seed);
+  mpz_mod(t0, input, vdf_mimc_modulus);
+  memset(out, 0, VDF_MIMC_SIZE);
+  size_t countp;
+  mpz_export(out, &countp, 1, 1, 0, 0, t0);
+}
+
+// NOTE pitfall. vdf_mimc_import(seed) is optional here, but mandatory in vdf_mimc_verify
+void vdf_mimc_slow(unsigned char* seed, unsigned char* out, int iterations) {
+  mpz_t t0, t1;
+  mpz_init(t0);
+  mpz_init(t1);
+  
+  mpz_t input;
+  // MSB [0]
+  mpz_import(input, VDF_MIMC_SIZE, 1, sizeof(seed[0]), 0, 0, seed);
+  for (int i = 1; i < iterations; i++) {
+    // why not mpz_powm ?
+    mpz_pow_ui(t0, input, 3);
+    mpz_add(t1, t0, vdf_mimc_round_constants[i%vdf_mimc_len_round_constants]);
+    mpz_mod(input, t1, vdf_mimc_modulus);
+  }
+  memset(out, 0, VDF_MIMC_SIZE);
+  size_t countp;
+  mpz_export(out, &countp, 1, 1, 0, 0, input);
+}
+
+// NOTE seed_expd can be more than p, first iteration should use vdf_mimc_import(seed_expd)
+bool vdf_mimc_verify(unsigned char* seed_expd, unsigned char* out, int iterations) {
+  mpz_t t0, t1;
+  mpz_init(t0);
+  mpz_init(t1);
+  
+  mpz_t input;
+  // MSB [0]
+  mpz_import(input, VDF_MIMC_SIZE, 1, sizeof(out[0]), 0, 0, out);
+  for (int i = iterations - 1; i > 0; i--) {
+    mpz_sub(t0, input, vdf_mimc_round_constants[i%vdf_mimc_len_round_constants]);
+    mpz_powm(input, t0, vdf_mimc_little_fermat_pow, vdf_mimc_modulus);
+  }
+  unsigned char seed_real[VDF_MIMC_SIZE] = {0};
+  size_t countp;
+  mpz_export(seed_real, &countp, 1, 1, 0, 0, input);
+  
+  return 0 == memcmp(seed_real, seed_expd, VDF_MIMC_SIZE);
 }

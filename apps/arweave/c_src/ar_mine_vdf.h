@@ -439,3 +439,133 @@ static ERL_NIF_TERM vdf_parallel_sha_randomx_verify_nif(
 
 	return enif_make_atom(envPtr, "ok");
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//    MIMC
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+static ERL_NIF_TERM vdf_mimc_init_nif(ErlNifEnv* envPtr, int argc, const ERL_NIF_TERM argv[])
+{
+	ErlNifBinary ModBin, PowBin;
+
+	if (argc != 2) {
+		return enif_make_badarg(envPtr);
+	}
+	if (!enif_inspect_binary(envPtr, argv[0], &ModBin)) {
+		return enif_make_badarg(envPtr);
+	}
+	if (ModBin.size != VDF_MIMC_SIZE) {
+		return enif_make_badarg(envPtr);
+	}
+	if (!enif_inspect_binary(envPtr, argv[1], &PowBin)) {
+		return enif_make_badarg(envPtr);
+	}
+	if (PowBin.size != VDF_MIMC_SIZE) {
+		return enif_make_badarg(envPtr);
+	}
+
+	mpz_t mod;
+	mpz_import(mod, VDF_MIMC_SIZE, 1, sizeof(seed[0]), 0, 0, ModBin.data);
+	mpz_t pow;
+	mpz_import(pow, VDF_MIMC_SIZE, 1, sizeof(seed[0]), 0, 0, ModPow.data);
+	vdf_mimc_init(mod, pow);
+
+	return enif_make_atom(envPtr, "ok");
+}
+
+static ERL_NIF_TERM vdf_mimc_slow_nif(ErlNifEnv* envPtr, int argc, const ERL_NIF_TERM argv[])
+{
+	ErlNifBinary WalletBinary, Seed;
+	int checkpointCount;
+	int iterations;
+
+	if (argc != 3) {
+		return enif_make_badarg(envPtr);
+	}
+	if (!enif_inspect_binary(envPtr, argv[0], &WalletBinary)) {
+		return enif_make_badarg(envPtr);
+	}
+	if (WalletBinary.size != WALLET_SIZE) {
+		return enif_make_badarg(envPtr);
+	}
+	if (!enif_inspect_binary(envPtr, argv[1], &Seed)) {
+		return enif_make_badarg(envPtr);
+	}
+	if (Seed.size != VDF_MIMC_SIZE) {
+		return enif_make_badarg(envPtr);
+	}
+	if (!enif_get_int(envPtr, argv[2], &iterations)) {
+		return enif_make_badarg(envPtr);
+	}
+
+	unsigned char temp_result[VDF_MIMC_SIZE];
+	size_t outCheckpointSize = VDF_MIMC_SIZE*checkpointCount;
+	{
+		SHA256_CTX sha256;
+		SHA256_Init(&sha256);
+		SHA256_Update(&sha256, WalletBinary.data, WALLET_SIZE);
+		SHA256_Update(&sha256, Seed.data, VDF_MIMC_SIZE); // -1 memcpy
+		SHA256_Final(temp_result, &sha256);
+	}
+
+	// NOTE vdf_mimc_import and vdf_mimc_slow are ok with same input and output, so less memory on stack
+	vdf_mimc_import(temp_result, temp_result);
+	vdf_mimc_slow(temp_result, temp_result, iterations);
+
+	return ok_tuple(envPtr, make_output_binary(envPtr, temp_result, VDF_MIMC_SIZE));
+}
+
+static ERL_NIF_TERM vdf_mimc_verify_nif(
+	ErlNifEnv* envPtr,
+	int argc,
+	const ERL_NIF_TERM argv[]
+) {
+	ErlNifBinary WalletBinary, Seed, InRes;
+	int iterations;
+
+	if (argc != 4) {
+		return enif_make_badarg(envPtr);
+	}
+
+	// copypasted from vdf_sha2_nif
+	if (!enif_inspect_binary(envPtr, argv[0], &WalletBinary)) {
+		return enif_make_badarg(envPtr);
+	}
+	if (WalletBinary.size != WALLET_SIZE) {
+		return enif_make_badarg(envPtr);
+	}
+	if (!enif_inspect_binary(envPtr, argv[1], &Seed)) {
+		return enif_make_badarg(envPtr);
+	}
+	if (Seed.size != RANDOMX_HASH_SIZE) {
+		return enif_make_badarg(envPtr);
+	}
+	if (!enif_get_int(envPtr, argv[2], &iterations)) {
+		return enif_make_badarg(envPtr);
+	}
+	if (!enif_inspect_binary(envPtr, argv[3], &InRes)) {
+		return enif_make_badarg(envPtr);
+	}
+	if (InRes.size != VDF_SHA_HASH_SIZE) {
+		return enif_make_badarg(envPtr);
+	}
+	
+	unsigned char intermediate_seed[VDF_MIMC_SIZE];
+	size_t outCheckpointSize = VDF_MIMC_SIZE*checkpointCount;
+	{
+		SHA256_CTX sha256;
+		SHA256_Init(&sha256);
+		SHA256_Update(&sha256, WalletBinary.data, WALLET_SIZE);
+		SHA256_Update(&sha256, Seed.data, VDF_MIMC_SIZE); // -1 memcpy
+		SHA256_Final(intermediate_seed, &sha256);
+	}
+	// NOTE vdf_mimc_import and vdf_mimc_slow are ok with same input and output, so less memory on stack
+	vdf_mimc_import(intermediate_seed, intermediate_seed);
+	// NOTE last paramemter will be array later
+	bool res = vdf_mimc_verify(intermediate_seed, InRes.data, iterations);
+	if (!res) {
+		return error(envPtr, "verification failed");
+	}
+
+	return enif_make_atom(envPtr, "ok");
+}

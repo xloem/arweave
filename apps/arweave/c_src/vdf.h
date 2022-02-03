@@ -1,10 +1,13 @@
 #include <stdbool.h>
+#include <gmp.h>
 #include "randomx.h"
 
 const int WALLET_SIZE = 32;
 // const int VDF_SHA_HASH_SIZE = 32;
 // This required for mixed sha+randomx, because possible different seed sizes.
 const int VDF_SHA_HASH_SIZE = RANDOMX_HASH_SIZE;
+// const int VDF_MIMC_SIZE = 32;
+const int VDF_MIMC_SIZE = RANDOMX_HASH_SIZE;
 
 #if defined(__cplusplus)
 extern "C" {
@@ -22,6 +25,11 @@ void vdf_parallel_sha_randomx(unsigned char* walletBuffer, unsigned char* seed, 
 	int hashingIterationsSha, int hashingIterationsRandomx, randomx_vm *vmPtr);
 bool vdf_parallel_sha_randomx_verify(unsigned char* walletBuffer, unsigned char* seed, int checkpointCount, int hashingIterationsSha, int hashingIterationsRandomx,
 	unsigned char* inRes, unsigned char* inCheckpoint, int maxThreadCount, randomx_dataset* datasetPtr, randomx_cache* cachePtr, randomx_vm *vmPtr, randomx_flags flags);
+
+void vdf_mimc_init(const mpz_t &modulus, const mpz_t &pow);
+void vdf_mimc_import(unsigned char* seed, unsigned char* out);
+void vdf_mimc_slow(unsigned char* seed, unsigned char* out, int iterations);
+void vdf_verify(unsigned char* seed, unsigned char* out, int iterations);
 
 #if defined(__cplusplus)
 }
