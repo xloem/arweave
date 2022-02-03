@@ -26,10 +26,10 @@ void vdf_parallel_sha_randomx(unsigned char* walletBuffer, unsigned char* seed, 
 bool vdf_parallel_sha_randomx_verify(unsigned char* walletBuffer, unsigned char* seed, int checkpointCount, int hashingIterationsSha, int hashingIterationsRandomx,
 	unsigned char* inRes, unsigned char* inCheckpoint, int maxThreadCount, randomx_dataset* datasetPtr, randomx_cache* cachePtr, randomx_vm *vmPtr, randomx_flags flags);
 
-void vdf_mimc_init(const mpz_t &modulus, const mpz_t &pow);
+void vdf_mimc_init(mpz_t modulus, mpz_t pow);
 void vdf_mimc_import(unsigned char* seed, unsigned char* out);
 void vdf_mimc_slow(unsigned char* seed, unsigned char* out, int iterations);
-void vdf_verify(unsigned char* seed, unsigned char* out, int iterations);
+bool vdf_mimc_verify(unsigned char* seed, unsigned char* out, int iterations);
 
 #if defined(__cplusplus)
 }

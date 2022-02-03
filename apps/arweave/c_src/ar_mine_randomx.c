@@ -33,7 +33,10 @@ static ErlNifFunc nif_funcs[] = {
 	{"vdf_randomx_nif", 6, vdf_randomx_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
 	{"vdf_parallel_randomx_verify_nif", 9, vdf_parallel_randomx_verify_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
 	{"vdf_parallel_sha_randomx_nif", 7, vdf_parallel_sha_randomx_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
-	{"vdf_parallel_sha_randomx_verify_nif", 10, vdf_parallel_sha_randomx_verify_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND}
+	{"vdf_parallel_sha_randomx_verify_nif", 10, vdf_parallel_sha_randomx_verify_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
+	{"vdf_mimc_init_nif", 2, vdf_mimc_init_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
+	{"vdf_mimc_slow_nif", 3, vdf_mimc_slow_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND},
+	{"vdf_mimc_verify_nif", 4, vdf_mimc_verify_nif, ERL_NIF_DIRTY_JOB_CPU_BOUND}
 };
 
 ERL_NIF_INIT(ar_mine_randomx, nif_funcs, load, NULL, NULL, NULL);

@@ -518,7 +518,7 @@ mpz_t vdf_mimc_round_constants[vdf_mimc_len_round_constants];
 mpz_t vdf_mimc_modulus;
 mpz_t vdf_mimc_pow;
 mpz_t vdf_mimc_little_fermat_pow;
-void vdf_mimc_init(const mpz_t &modulus, const mpz_t &pow) {
+void vdf_mimc_init(mpz_t modulus, mpz_t pow) {
   mpz_init_set(vdf_mimc_modulus, modulus);
   mpz_init_set(vdf_mimc_pow, pow);
   

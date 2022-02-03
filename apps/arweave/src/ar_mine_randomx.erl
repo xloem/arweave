@@ -33,7 +33,10 @@
 	vdf_randomx_nif/6,
 	vdf_parallel_randomx_verify_nif/9,
 	vdf_parallel_sha_randomx_nif/7,
-	vdf_parallel_sha_randomx_verify_nif/10
+	vdf_parallel_sha_randomx_verify_nif/10,
+	vdf_mimc_init_nif/2,
+	vdf_mimc_slow_nif/3,
+	vdf_mimc_verify_nif/4
 ]).
 
 -include_lib("arweave/include/ar.hrl").
@@ -351,6 +354,14 @@ vdf_parallel_sha_randomx_nif(_WalletBinary, _PrevState, _CheckpointCount, _Itera
 vdf_parallel_sha_randomx_verify_nif(_WalletBinary, _PrevState, _CheckpointCount, _IterationsSha, _IterationsRandomx, _InCheckpoint, _InRes, _MaxThreadCount, _State, _Vm) ->
 	erlang:nif_error(nif_not_loaded).
 % TODO expose non-nif API
+
+
+vdf_mimc_init_nif(_ModBin, _PowBin) ->
+	erlang:nif_error(nif_not_loaded).
+vdf_mimc_slow_nif(_Wallet, _Seed, _Iterations) ->
+	erlang:nif_error(nif_not_loaded).
+vdf_mimc_verify_nif(_Wallet, _Seed, _Iterations, _InRes) ->
+	erlang:nif_error(nif_not_loaded).
 
 init_nif() ->
 	PrivDir = code:priv_dir(arweave),
