@@ -1,10 +1,11 @@
 %%% @doc Utilities for manipulating wallets.
 -module(ar_wallet).
 
--export([new/0, new/1, sign/2, verify/3, verify_pre_fork_2_4/3, to_rsa_address/1,
-		to_address/1, to_address/2, load_keyfile/1, new_keyfile/0, new_keyfile/1,
+-export([new/0, new_ecdsa/0, new/1, sign/2, verify/3, verify_pre_fork_2_4/3, to_rsa_address/1,
+		to_address/1, to_address/2, load_key/1, load_keyfile/1, new_keyfile/0, new_keyfile/1,
 		new_keyfile/2, base64_address_with_optional_checksum_to_decoded_address/1,
-		base64_address_with_optional_checksum_to_decoded_address_safe/1, wallet_filepath/1]).
+		base64_address_with_optional_checksum_to_decoded_address_safe/1, wallet_filepath/1,
+		get_or_create_wallet/1]).
 
 -include_lib("arweave/include/ar.hrl").
 -include_lib("arweave/include/ar_config.hrl").
@@ -12,6 +13,10 @@
 -include_lib("public_key/include/public_key.hrl").
 
 -include_lib("eunit/include/eunit.hrl").
+
+%%%===================================================================
+%%% Public interface.
+%%%===================================================================
 
 %% @doc Generate a new wallet public key and private key.
 new() ->
@@ -28,15 +33,19 @@ new(KeyType = {KeyAlg, KeyCrv}) when KeyAlg =:= ?EDDSA_SIGN_ALG andalso KeyCrv =
     {Pub, Priv} = crypto:generate_key(KeyAlg, KeyCrv),
     {{KeyType, Priv, Pub}, {KeyType, Pub}}.
 
+%% @doc Generate a new ECDSA key, store it in a keyfile.
+new_ecdsa() ->
+	new_keyfile({?ECDSA_SIGN_ALG, secp256k1}).
+
 %% @doc Generate a new wallet public and private key, with a corresponding keyfile.
 new_keyfile() ->
     new_keyfile(?DEFAULT_KEY_TYPE, wallet_address).
-new_keyfile(WalletName) ->
-    new_keyfile(?DEFAULT_KEY_TYPE, WalletName).
+
+new_keyfile(KeyType) ->
+    new_keyfile(KeyType, wallet_address).
 
 %% @doc Generate a new wallet public and private key, with a corresponding keyfile.
 %% The provided key is used as part of the file name.
-%% @end
 new_keyfile(KeyType, WalletName) ->
 	{Pub, Priv, Key} =
 		case KeyType of
@@ -100,18 +109,21 @@ new_keyfile(KeyType, WalletName) ->
 	ar_storage:write_file_atomic(Filename, Key),
 	{{KeyType, Priv, Pub}, {KeyType, Pub}}.
 
-wallet_filepath(WalletName, PubKey, KeyType) ->
-	wallet_filepath(wallet_name(WalletName, PubKey, KeyType)).
-
 wallet_filepath(Wallet) ->
 	{ok, Config} = application:get_env(arweave, config),
 	Filename = lists:flatten(["arweave_keyfile_", binary_to_list(Wallet), ".json"]),
 	filename:join([Config#config.data_dir, ?WALLET_DIR, Filename]).
 
-wallet_name(wallet_address, PubKey, KeyType) ->
-	ar_util:encode(to_address(PubKey, KeyType));
-wallet_name(WalletName, _, _) ->
-	WalletName.
+%% @doc Read the keyfile for the the key with the given address from disk.
+%% Return not_found if arweave_keyfile_[addr].json is not found in [data_dir]/?WALLET_DIR.
+load_key(Addr) ->
+	Path = wallet_filepath(ar_util:encode(Addr)),
+	case filelib:is_file(Path) of
+		false ->
+			not_found;
+		true ->
+			load_keyfile(Path)
+	end.
 
 %% @doc Extract the public and private key from a keyfile.
 load_keyfile(File) ->
@@ -221,21 +233,13 @@ verify({{KeyAlg, KeyCrv}, Pub}, Data, Sig)
 		[Pub, KeyCrv]
 	).
 
-ecdsa_verify_low_s(Sig) ->
-	<<16#30, _Len0:8, 16#02, Len1:8, Rest/binary>> = Sig,
-	<<_R:Len1/binary, 16#02, _Len2:8, EncodedS/binary>> = Rest,
-	S = binary:decode_unsigned(EncodedS),
-	{_, _, _, EncodedOrder, _} = crypto:ec_curve(secp256k1),
-	Order = binary:decode_unsigned(EncodedOrder),
-	S < Order div 2 + 1.
-
 %% @doc Verify that a signature is correct. The function was used to verify
 %% transactions until the fork 2.4. It rejects a valid transaction when the
 %% key modulus bit size is less than 4096. The new method (verify/3) successfully
 %% verifies all the historical transactions so this function is not used anywhere
 %% after the fork 2.4.
-%% @end
-verify_pre_fork_2_4({{KeyAlg, PublicExpnt}, Pub}, Data, Sig) when KeyAlg =:= ?RSA_SIGN_ALG andalso PublicExpnt =:= 65537 ->
+verify_pre_fork_2_4({{KeyAlg, PublicExpnt}, Pub}, Data, Sig)
+		when KeyAlg =:= ?RSA_SIGN_ALG andalso PublicExpnt =:= 65537 ->
 	rsa_pss:verify_legacy(
 		Data,
 		sha256,
@@ -247,10 +251,12 @@ verify_pre_fork_2_4({{KeyAlg, PublicExpnt}, Pub}, Data, Sig) when KeyAlg =:= ?RS
 	).
 
 %% @doc Generate an address from a public key.
-to_address({SigType, PubKey}) ->
-	to_address(PubKey, SigType);
-to_address({SigType, _Priv, PubKey}) ->
-	to_address(PubKey, SigType).
+to_address({{SigType, _Priv, Pub}, {SigType, Pub}}) ->
+	to_address(Pub, SigType);
+to_address({SigType, Pub}) ->
+	to_address(Pub, SigType);
+to_address({SigType, _Priv, Pub}) ->
+	to_address(Pub, SigType).
 
 %% @doc Generate an address from a public key.
 to_address(PubKey, {?RSA_SIGN_ALG, 65537}) when bit_size(PubKey) == 256 ->
@@ -263,22 +269,6 @@ to_address(PubKey, {?ECDSA_SIGN_ALG, secp256k1}) ->
 	<< (?ECDSA_TYPE_BYTE)/binary, (hash_address(PubKey))/binary >>;
 to_address(PubKey, {?EDDSA_SIGN_ALG, ed25519}) ->
 	<< (?EDDSA_TYPE_BYTE)/binary, (hash_address(PubKey))/binary >>.
-
-to_rsa_address(PubKey) ->
-	hash_address(PubKey).
-
-hash_address(PubKey) ->
-	crypto:hash(?HASH_ALG, PubKey).
-
-decoded_address_to_checksum(AddrDecoded) ->
-	Crc = erlang:crc32(AddrDecoded),
-	<< Crc:32 >>.
-
-decoded_address_to_base64_address_with_checksum(AddrDecoded) ->
-	Checksum = decoded_address_to_checksum(AddrDecoded),
-	AddrBase64 = ar_util:encode(AddrDecoded),
-	ChecksumBase64 = ar_util:encode(Checksum),
-	<< AddrBase64/binary, ":", ChecksumBase64/binary >>.
 
 base64_address_with_optional_checksum_to_decoded_address(AddrBase64) ->
 	Size = byte_size(AddrBase64),
@@ -315,6 +305,70 @@ base64_address_with_optional_checksum_to_decoded_address_safe(AddrBase64)->
 		_:_ ->
 			{error, invalid}
 	end.
+
+%% @doc Read a wallet of one of the given types from disk. Files modified later are prefered.
+%% If no file is found, create one of the type standing first in the list.
+get_or_create_wallet(Types) ->
+	{ok, Config} = application:get_env(arweave, config),
+	WalletDir = filename:join(Config#config.data_dir, ?WALLET_DIR),
+	Entries =
+		lists:reverse(lists:sort(filelib:fold_files(
+			WalletDir,
+			"(.*\\.json$)",
+			false,
+			fun(F, Acc) ->
+				 [{filelib:last_modified(F), F} | Acc]
+			end,
+			[])
+		)),
+	get_or_create_wallet(Entries, Types).
+
+get_or_create_wallet([], [Type | _]) ->
+	ar_wallet:new_keyfile(Type);
+get_or_create_wallet([{_LastModified, F} | Entries], Types) ->
+	{{Type, _, _}, _} = W = load_keyfile(F),
+	case lists:member(Type, Types) of
+		true ->
+			W;
+		false ->
+			get_or_create_wallet(Entries, Types)
+	end.
+
+%%%===================================================================
+%%% Private functions.
+%%%===================================================================
+
+wallet_filepath(WalletName, PubKey, KeyType) ->
+	wallet_filepath(wallet_name(WalletName, PubKey, KeyType)).
+
+wallet_name(wallet_address, PubKey, KeyType) ->
+	ar_util:encode(to_address(PubKey, KeyType));
+wallet_name(WalletName, _, _) ->
+	WalletName.
+
+ecdsa_verify_low_s(Sig) ->
+	<<16#30, _Len0:8, 16#02, Len1:8, Rest/binary>> = Sig,
+	<<_R:Len1/binary, 16#02, _Len2:8, EncodedS/binary>> = Rest,
+	S = binary:decode_unsigned(EncodedS),
+	{_, _, _, EncodedOrder, _} = crypto:ec_curve(secp256k1),
+	Order = binary:decode_unsigned(EncodedOrder),
+	S < Order div 2 + 1.
+
+to_rsa_address(PubKey) ->
+	hash_address(PubKey).
+
+hash_address(PubKey) ->
+	crypto:hash(?HASH_ALG, PubKey).
+
+decoded_address_to_checksum(AddrDecoded) ->
+	Crc = erlang:crc32(AddrDecoded),
+	<< Crc:32 >>.
+
+decoded_address_to_base64_address_with_checksum(AddrDecoded) ->
+	Checksum = decoded_address_to_checksum(AddrDecoded),
+	AddrBase64 = ar_util:encode(AddrDecoded),
+	ChecksumBase64 = ar_util:encode(Checksum),
+	<< AddrBase64/binary, ":", ChecksumBase64/binary >>.
 
 compress_ecdsa_pubkey(<<4:8, PubPoint/binary>>) ->
 	PubPointMid = byte_size(PubPoint) div 2,

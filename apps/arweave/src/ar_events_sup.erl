@@ -31,13 +31,21 @@ init([]) ->
 	{ok, {{one_for_one, 5, 10}, [
 		%% Events: new, ready_for_mining, dropped.
 		?CHILD(ar_events, tx, worker),
-		%% Events: new, mined.
+		%% Events: discovered, rejected, new, mined.
 		?CHILD(ar_events, block, worker),
 		%% Events: unpack_request, unpacked, repack_request, packed.
 		?CHILD(ar_events, chunk, worker),
 		%% Events: made_request, bad_response, served_tx, served_block, served_chunk,
 		%% gossiped_tx, gossiped_block, banned
 		?CHILD(ar_events, peer, worker),
+		%% Events: initialized.
+		?CHILD(ar_events, node_state, worker),
+		%% Events: valid, invalid.
+		?CHILD(ar_events, nonce_limiter, worker),
+		%% Events: found_solution.
+		?CHILD(ar_events, miner, worker),
+		%% Events: removed_file.
+		?CHILD(ar_events, chunk_storage, worker),
 		%% Used for the testing purposes.
 		?CHILD(ar_events, testing, worker)
 	]}}.

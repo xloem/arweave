@@ -6,10 +6,10 @@
 
 -import(ar_test_node, [
 		start/1, start/2, slave_mine/0, wait_until_height/1, slave_start/1,
-		slave_start/2, slave_wait_until_height/1, connect_to_slave/0,
-		assert_post_tx_to_master/1, wait_until_receives_txs/1,
-		assert_slave_wait_until_receives_txs/1,
-		assert_slave_wait_until_height/1, slave_call/3, slave_add_tx/1,
+		slave_start/2, connect_to_slave/0, wait_until_receives_txs/1,
+		assert_post_tx_to_master/1, assert_slave_wait_until_receives_txs/1,
+		assert_slave_wait_until_height/1, slave_call/3,
+		assert_post_tx_to_slave/1,
 		disconnect_from_slave/0, sign_tx/2, get_tx_anchor/1, post_tx_to_master/2,
 		wait_until_joined/0, read_block_when_stored/1, post_and_mine/2,
 		get_balance_by_address/2, test_with_mocked_functions/2, post_tx_to_master/1,
@@ -57,7 +57,8 @@ test_cannot_spend_accounts_of_other_type() ->
 	],
 	lists:foreach(
 		fun({ExpectedErrors, TX}) ->
-			?assertMatch({ok, {{<<"400">>, _}, _, <<"Transaction verification failed.">>, _, _}},
+			?assertMatch({ok, {{<<"400">>, _}, _,
+					<<"Transaction verification failed.">>, _, _}},
 					post_tx_to_master(TX)),
 			?assertEqual({ok, ExpectedErrors}, ar_tx_db:get_error_codes(TX#tx.id))
 		end,
@@ -95,7 +96,8 @@ test_cannot_spend_accounts_of_other_type() ->
 	],
 	lists:foreach(
 		fun({ErrorCodes, TX}) ->
-			?assertMatch({ok, {{<<"400">>, _}, _, <<"Transaction verification failed.">>, _, _}},
+			?assertMatch({ok, {{<<"400">>, _}, _,
+					<<"Transaction verification failed.">>, _, _}},
 					post_tx_to_master(TX)),
 			?assertEqual({ok, ErrorCodes}, ar_tx_db:get_error_codes(TX#tx.id))
 		end,
@@ -160,19 +162,18 @@ multi_account_test_() ->
 								{3, {slave, {1, rsa}, [
 										%% RSA -> existing ECDSA.
 										{{1, rsa}, {{2, ecdsa}, 1, <<>>}},
-										{{1, rsa}, {{2, ecdsa}, 1, <<"payload">>}}]}},
+										{{1, rsa}, {{2, ecdsa}, 1, <<>>}}]}},
 								{4, {master, {1, rsa}, [
 										%% RSA -> new EDDSA.
 										{{1, rsa}, {{4, eddsa}, 1, <<>>}}]}},
 								{5, {slave, {4, eddsa}, [
 										%% RSA -> new RSA.
-										{{1, rsa}, {{3, rsa}, 2, <<"a">>}}]}},
+										{{1, rsa}, {{3, rsa}, 2, <<>>}}]}},
 								{6, {master, {1, rsa}, [
 										%% RSA -> existing RSA.
 										{{3, rsa}, {{1, rsa}, 1, <<>>}},
 										%% RSA -> existing EDDSA.
-										{{1, rsa}, {{4, eddsa}, 1,
-													crypto:strong_rand_bytes(762 * 1024)}}]}},
+										{{1, rsa}, {{4, eddsa}, 1, <<>>}}]}},
 								{7, {master, {2, ecdsa}, []}},
 								{8, {master, {4, eddsa}, []}},
 								{9, {master, {5, ecdsa}, []}},
@@ -180,24 +181,22 @@ multi_account_test_() ->
 										%% EDDSA -> new ECDSA.
 										{{4, eddsa}, {{7, ecdsa}, 1, <<>>}},
 										%% EDDSA -> existing ECDSA.
-										{{4, eddsa}, {{2, ecdsa}, 2, <<"a">>}}]}},
+										{{4, eddsa}, {{2, ecdsa}, 2, <<>>}}]}},
 								{11, {master, {4, eddsa}, [
 										%% EDDSA -> new RSA.
 										{{6, eddsa}, {{8, rsa}, 1, <<>>}},
 										%% EDDSA -> existing RSA.
 										{{6, eddsa}, {{1, rsa}, 1, <<>>}},
 										%% EDDSA -> new EDDSA.
-										{{13, eddsa}, {{9, eddsa}, 1,
-												crypto:strong_rand_bytes(255 * 1024)}},
+										{{13, eddsa}, {{9, eddsa}, 1, <<>>}},
 										%% EDDSA -> existing EDDSA.
 										{{4, eddsa}, {{6, eddsa}, 1, <<>>}},
 										%% ECDSA -> new ECDSA.
-										{{2, ecdsa}, {{10, ecdsa}, 1, <<"a">>}},
+										{{2, ecdsa}, {{10, ecdsa}, 1, <<>>}},
 										%% ECDSA -> existing ECDSA.
-										{{2, ecdsa}, {{5, ecdsa}, 2, <<"a">>}},
+										{{2, ecdsa}, {{5, ecdsa}, 2, <<>>}},
 										%% ECDSA -> new RSA.
-										{{5, ecdsa}, {{11, rsa}, 1,
-												crypto:strong_rand_bytes(256 * 1024)}},
+										{{5, ecdsa}, {{11, rsa}, 1, <<>>}},
 										%% ECDSA -> existing RSA.
 										{{2, ecdsa}, {{1, rsa}, 1, <<>>}}]}},
 								{12, {slave, {5, ecdsa}, [
@@ -205,21 +204,18 @@ multi_account_test_() ->
 										{{5, ecdsa}, {{4, eddsa}, 1, <<>>}},
 										%% RSA transfer in the same block.
 										{{1, rsa}, {{4, eddsa}, 1, <<>>}},
-										%% RSA empty upload.
+										%% RSA upload.
 										{{1, rsa}, {no_address, 0, <<>>}},
-										%% ECDSA empty upload.
+										%% ECDSA upload.
 										{{10, ecdsa}, {no_address, 0, <<>>}},
-										%% EDDSA empty upload.
+										%% EDDSA upload.
 										{{4, eddsa}, {no_address, 0, <<>>}},
 										%% RSA upload.
-										{{1, rsa}, {no_address, 0,
-												crypto:strong_rand_bytes(255 * 1024)}},
+										{{1, rsa}, {no_address, 0, <<>>}},
 										%% ECDSA upload.
-										{{7, ecdsa}, {no_address, 0,
-												crypto:strong_rand_bytes(811 * 1024)}},
+										{{7, ecdsa}, {no_address, 0, <<>>}},
 										%% EDDSA upload.
-										{{6, eddsa}, {no_address, 0,
-												crypto:strong_rand_bytes(255 * 1024)}}]}},
+										{{6, eddsa}, {no_address, 0, <<>>}}]}},
 								{13, {master, {11, rsa}, [
 										%% ECDSA -> new EDDSA.
 										{{5, ecdsa}, {{12, eddsa}, 3, <<>>}}]}}]),
@@ -282,7 +278,8 @@ multi_account_test_() ->
 	).
 
 test_multi_account(Args) ->
-	%% ScenarioTemplate: a sorted map Height => {Node, MiningAddressTemplate, TransfersTemplate}.
+	%% ScenarioTemplate:
+	%%		a sorted map Height => {Node, MiningAddressTemplate, TransfersTemplate}.
 	%% AddressTemplate: {Number, Type}.
 	%% Type: rsa | ecdsa | eddsa.
 	%% TransfersTemplate: a map SenderAddressTemplate => {RecipientAddressTemplate, Amount,
@@ -291,19 +288,22 @@ test_multi_account(Args) ->
 	%% ExpectedAccountsTemplate: a map Height => [{AddressTemplate, Balance}].
 	{Title, ScenarioTemplate, GenesisWalletsTemplate, ExpectedAccountsTemplate} = Args,
 	?debugMsg(Title),
+	%case Title of "RSA address mining." ->
 	%% Scenario: a sorted map Height => {Node, MiningAddress, Transfers}.
 	%% Transfers: a map SenderAddress => {RecipientAddress, Amount, Payload}.
 	%% Wallets: a map Address => Wallet.
 	%% GenesisWallets: [{Wallet, Balance}].
 	%% ExpectedAccounts: a map Height => [{Address, Balance}].
-	{Scenario, Wallets, GenesisWallets, ExpectedAccounts} = generate_wallets(ScenarioTemplate,
-			GenesisWalletsTemplate, ExpectedAccountsTemplate),
+	{Scenario, Wallets, GenesisWallets,
+			ExpectedAccounts} = generate_wallets(ScenarioTemplate,
+					GenesisWalletsTemplate, ExpectedAccountsTemplate),
 	[B0] = ar_weave:init(GenesisWallets, ?DEFAULT_DIFF, ?AR(1)),
 	{Master, _} = start(B0),
 	{Slave, _} = slave_start(B0),
 	connect_to_slave(),
 	Iterator = gb_sets:iterator(Scenario),
-	test_multi_account(gb_sets:next(Iterator), Title, Wallets, ExpectedAccounts, Master, Slave).
+	test_multi_account(gb_sets:next(Iterator), Title, Wallets, ExpectedAccounts,
+			Master, Slave).
 
 generate_wallets(ScenarioTemplate, GenesisWalletsTemplate, ExpectedAccountsTemplate) ->
 	{Scenario, NumberedWallets} =
@@ -336,8 +336,8 @@ generate_wallets(ScenarioTemplate, GenesisWalletsTemplate, ExpectedAccountsTempl
 						{[], WalletsAcc2},
 						TransfersTemplate
 					),
-				MiningAddress = ar_wallet:to_address(element(2, maps:get(MiningAddressNumber,
-						WalletsAcc2))),
+				MiningAddress = ar_wallet:to_address(element(2,
+						maps:get(MiningAddressNumber, WalletsAcc2))),
 				{gb_sets:add_element({Height, {Node, MiningAddress, Transfers}}, Acc),
 						WalletsAcc3}
 			end,
@@ -450,9 +450,8 @@ ar_node_interface_test() ->
 	?assertEqual(1, ar_node:get_height()),
 	?assertEqual(H, ar_node:get_current_block_hash()).
 
-%% @doc Ensure that a 'claimed' block triggers a non-zero mining reward.
 mining_reward_test() ->
-	{_Priv1, Pub1} = ar_wallet:new(),
+	{_Priv1, Pub1} = ar_wallet:new_keyfile({eddsa, ed25519}),
 	[B0] = ar_weave:init([]),
 	{_Node1, _} = start(B0, ar_wallet:to_address(Pub1)),
 	ar_node:mine(),
@@ -462,7 +461,7 @@ mining_reward_test() ->
 %% @doc Check that other nodes accept a new block and associated mining reward.
 multi_node_mining_reward_test_() ->
 	{timeout, 20, fun() ->
-		{_Priv1, Pub1} = ar_wallet:new(),
+		{_Priv1, Pub1} = slave_call(ar_wallet, new_keyfile, [{ecdsa, secp256k1}]),
 		[B0] = ar_weave:init([]),
 		start(B0),
 		slave_start(B0, ar_wallet:to_address(Pub1)),
@@ -483,12 +482,15 @@ replay_attack_test_() ->
 		{_Node1, _} = start(B0),
 		slave_start(B0),
 		connect_to_slave(),
-		ar_node:add_tx(SignedTX),
+		assert_post_tx_to_master(SignedTX),
 		ar_node:mine(),
-		wait_until_height(1),
+		assert_slave_wait_until_height(1),
+		?assertEqual(?AR(8999), slave_call(ar_node, get_balance, [Pub1])),
+		?assertEqual(?AR(1000), slave_call(ar_node, get_balance, [Pub2])),
 		ar_node:add_tx(SignedTX),
+		wait_until_receives_txs([SignedTX]),
 		ar_node:mine(),
-		wait_until_height(2),
+		assert_slave_wait_until_height(2),
 		?assertEqual(?AR(8999), slave_call(ar_node, get_balance, [Pub1])),
 		?assertEqual(?AR(1000), slave_call(ar_node, get_balance, [Pub2]))
 	end}.
@@ -498,19 +500,19 @@ replay_attack_test_() ->
 wallet_transaction_test_() ->
 	TestWalletTransaction = fun(KeyType) ->
 		fun() ->
-			{Priv1, Pub1} = ar_wallet:new(KeyType),
+			{Priv1, Pub1} = ar_wallet:new_keyfile(KeyType),
 			{_Priv2, Pub2} = ar_wallet:new(),
 			TX = ar_tx:new(ar_wallet:to_address(Pub2), ?AR(1), ?AR(9000), <<>>),
 			SignedTX = ar_tx:sign(TX#tx{ format = 2 }, Priv1, Pub1),
 			[B0] = ar_weave:init([{ar_wallet:to_address(Pub1), ?AR(10000), <<>>}]),
-			{_Node1, _} = start(B0),
+			{_Node1, _} = start(B0,
+					ar_wallet:to_address(ar_wallet:new_keyfile({eddsa, ed25519}))),
 			slave_start(B0),
 			connect_to_slave(),
 			assert_post_tx_to_master(SignedTX),
-			wait_until_receives_txs([SignedTX]),
 			ar_node:mine(),
 			wait_until_height(1),
-			slave_wait_until_height(1),
+			assert_slave_wait_until_height(1),
 			?assertEqual(?AR(999), slave_call(ar_node, get_balance, [Pub1])),
 			?assertEqual(?AR(9000), slave_call(ar_node, get_balance, [Pub2]))
 		end
@@ -535,39 +537,16 @@ wallet_two_transaction_test_() ->
 		start(B0),
 		slave_start(B0),
 		connect_to_slave(),
-		ar_node:add_tx(SignedTX),
-		wait_until_receives_txs([SignedTX]),
+		assert_post_tx_to_master(SignedTX),
 		ar_node:mine(),
-		wait_until_height(1),
-		slave_add_tx(SignedTX2),
-		slave_call(ar_test_node, wait_until_receives_txs, [[SignedTX2]]),
+		assert_slave_wait_until_height(1),
+		assert_post_tx_to_slave(SignedTX2),
 		slave_mine(),
 		wait_until_height(2),
 		?AR(999) = ar_node:get_balance(Pub1),
 		?AR(8499) = ar_node:get_balance(Pub2),
 		?AR(500) = ar_node:get_balance(Pub3)
 	end).
-
-%% @doc Wallet0 -> Wallet1 { with tags } | mine | check
-mine_tx_with_key_val_tags_test_() ->
-	{timeout, 10, fun() ->
-		{Priv1, Pub1} = ar_wallet:new(),
-		{_Priv2, Pub2} = ar_wallet:new(),
-		TX = ar_tx:new(Pub2, ?AR(1), ?AR(9000), <<>>),
-		SignedTX = ar_tx:sign_v1(TX, Priv1, Pub1),
-		[B0] = ar_weave:init([{ar_wallet:to_address(Pub1), ?AR(10000), <<>>}], 8),
-		{_Node1, _} = start(B0),
-		slave_start(B0),
-		connect_to_slave(),
-		ar_storage:write_tx([SignedTX]),
-		ar_node:add_tx(SignedTX),
-		wait_until_receives_txs([SignedTX]),
-		ar_node:mine(),
-		slave_wait_until_height(1),
-		[{B1Hash, _, _} | _] = slave_call(ar_node, get_blocks, []),
-		#block { txs = TXs } = ar_storage:read_block(B1Hash),
-		?assertEqual([SignedTX], ar_storage:read_tx(TXs))
-	end}.
 
 %% @doc Ensure that TX Id threading functions correctly (in the positive case).
 tx_threading_test_() ->
@@ -582,41 +561,14 @@ tx_threading_test_() ->
 		{_Node1, _} = start(B0),
 		slave_start(B0),
 		connect_to_slave(),
-		ar_node:add_tx(SignedTX),
-		wait_until_receives_txs([SignedTX]),
+		assert_post_tx_to_master(SignedTX),
 		ar_node:mine(),
 		wait_until_height(1),
-		ar_node:add_tx(SignedTX2),
-		wait_until_receives_txs([SignedTX2]),
+		assert_post_tx_to_master(SignedTX2),
 		ar_node:mine(),
-		wait_until_height(2),
+		assert_slave_wait_until_height(2),
 		?assertEqual(?AR(7998), slave_call(ar_node, get_balance, [Pub1])),
 		?assertEqual(?AR(2000), slave_call(ar_node, get_balance, [Pub2]))
-	end}.
-
-%% @doc Ensure that TX Id threading functions correctly (in the negative case).
-bogus_tx_thread_test_() ->
-	{timeout, 60, fun() ->
-		{Priv1, Pub1} = ar_wallet:new(),
-		{_Priv2, Pub2} = ar_wallet:new(),
-		TX = ar_tx:new(Pub2, ?AR(1), ?AR(1000), <<>>),
-		TX2 = ar_tx:new(Pub2, ?AR(1), ?AR(1000), <<"INCORRECT TX ID">>),
-		SignedTX = ar_tx:sign_v1(TX, Priv1, Pub1),
-		SignedTX2 = ar_tx:sign_v1(TX2, Priv1, Pub1),
-		[B0] = ar_weave:init([{ar_wallet:to_address(Pub1), ?AR(10000), <<>>}]),
-		{_Node1, _} = start(B0),
-		slave_start(B0),
-		connect_to_slave(),
-		ar_node:add_tx(SignedTX),
-		wait_until_receives_txs([SignedTX]),
-		ar_node:mine(),
-		wait_until_height(1),
-		ar_node:add_tx(SignedTX2),
-		wait_until_receives_txs([SignedTX2]),
-		ar_node:mine(),
-		slave_wait_until_height(2),
-		?assertEqual(?AR(8999), slave_call(ar_node, get_balance, [Pub1])),
-		?assertEqual(?AR(1000), slave_call(ar_node, get_balance, [Pub2]))
 	end}.
 
 persisted_mempool_test_() ->

@@ -327,10 +327,15 @@ apply_block(DAG, NewB, RootHash, RewardPool, Rate, Height) ->
 	Tree = ar_diff_dag:reconstruct(DAG, RootHash, fun apply_diff/2),
 	TXs = NewB#block.txs,
 	Wallets = get_map(Tree, [NewB#block.reward_addr | ar_tx:get_addresses(TXs)]),
-	{NewRewardPool, UpdatedWallets} =
+	{NewRewardPool, MinerReward, UpdatedWallets} =
 		ar_node_utils:update_wallets(NewB, Wallets, RewardPool,	Rate, Height),
-	case NewB#block.reward_pool of
-		NewRewardPool ->
+	case {NewB#block.reward_pool == NewRewardPool, NewB#block.reward == MinerReward,
+			NewB#block.height >= ar_fork:height_2_6()} of
+		{false, _, _} ->
+			{{error, invalid_reward_pool}, DAG};
+		{true, false, true} ->
+			{{error, invalid_miner_reward}, DAG};
+		_ ->
 			RewardAddr = NewB#block.reward_addr,
 			UpdatedTree = apply_diff(UpdatedWallets, Tree),
 			{UpdatedRootHash, _} =
@@ -343,9 +348,7 @@ apply_block(DAG, NewB, RootHash, RewardPool, Rate, Height) ->
 					{{ok, UpdatedRootHash}, UpdatedDAG};
 				false ->
 					{{error, invalid_wallet_list}, DAG}
-			end;
-		_ ->
-			{{error, invalid_reward_pool}, DAG}
+			end
 	end.
 
 set_current(DAG, PrevRootHash, RootHash, RewardAddr, Height, PruneDepth) ->

@@ -1,7 +1,7 @@
 -module(ar_block_index).
 
 -export([init/1, update/2, member/1, get_list/1, get_element_by_height/1,
-		get_block_bounds/2, get_intersection/2, get_intersection/1]).
+		get_block_bounds/1, get_intersection/2, get_intersection/1]).
 
 %%%===================================================================
 %%% Public interface.
@@ -43,23 +43,14 @@ get_element_by_height(Height) ->
 
 %% @doc Return {BlockStartOffset, BlockEndOffset, TXRoot} where Offset >= BlockStartOffset,
 %% Offset < BlockEndOffset.
-get_block_bounds(Offset, BI) ->
-	%% The get_block_bounds2 check is not strictly necessary on mainnet because
-	%% the given Offset is below the threshold which may be reorganized by construction.
-	%% In tests, however, we set SEARCH_SPACE_UPPER_BOUND_DEPTH=2 and have reorgs that
-	%% are deeper than that.
-	case get_block_bounds2(Offset, BI) of
-		not_found ->
-			{WeaveSize, Height, _H, TXRoot} = Key = ets:next(block_index, {Offset, n, n, n}),
-			case Height of
-				0 ->
-					{0, WeaveSize, TXRoot};
-				_ ->
-					{PrevWeaveSize, _, _, _} = ets:prev(block_index, Key),
-					{PrevWeaveSize, WeaveSize, TXRoot}
-			end;
-		Element ->
-			Element
+get_block_bounds(Offset) ->
+	{WeaveSize, Height, _H, TXRoot} = Key = ets:next(block_index, {Offset, n, n, n}),
+	case Height of
+		0 ->
+			{0, WeaveSize, TXRoot};
+		_ ->
+			{PrevWeaveSize, _, _, _} = ets:prev(block_index, Key),
+			{PrevWeaveSize, WeaveSize, TXRoot}
 	end.
 
 %% @doc Return {Height, {H, WeaveSize, TXRoot}} with the  triplet present in both
@@ -107,14 +98,6 @@ get_list(BI, _Elem, Height, MaxHeight) when Height >= MaxHeight ->
 	BI;
 get_list(BI, {WeaveSize, _Height, H, TXRoot} = Key, Height, MaxHeight) ->
 	get_list([{H, WeaveSize, TXRoot} | BI], ets:next(block_index, Key), Height + 1, MaxHeight).
-
-get_block_bounds2(Offset, [{_, WeaveSize2, TXRoot}, {_, WeaveSize1, _} | _])
-		when Offset >= WeaveSize1, Offset < WeaveSize2 ->
-	{WeaveSize1, WeaveSize2, TXRoot};
-get_block_bounds2(Offset, [_, Element | BI]) ->
-	get_block_bounds2(Offset, [Element | BI]);
-get_block_bounds2(_Offset, _BI) ->
-	not_found.
 
 get_intersection(Height, BI, {'EXIT', _}) ->
 	get_intersection(Height - 1, BI, catch ets:slot(block_index, Height - 1));

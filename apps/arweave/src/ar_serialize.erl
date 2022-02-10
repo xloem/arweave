@@ -2,8 +2,7 @@
 %%% various protocol entitities - transactions, blocks, proofs, etc
 -module(ar_serialize).
 
--export([json_struct_to_block/1, block_to_json_struct/1,
-		block_to_binary/1, binary_to_block/1,
+-export([block_to_binary/1, binary_to_block/1, json_struct_to_block/1, block_to_json_struct/1,
 		block_announcement_to_binary/1, binary_to_block_announcement/1,
 		binary_to_block_announcement_response/1, block_announcement_response_to_binary/1,
 		tx_to_binary/1, binary_to_tx/1,
@@ -17,23 +16,27 @@
 		jsonify/1, dejsonify/1, json_decode/1, json_decode/2,
 		query_to_json_struct/1, json_struct_to_query/1,
 		chunk_proof_to_json_map/1, json_map_to_chunk_proof/1, encode_int/2,
-		signature_type_to_binary/1, binary_to_signature_type/1]).
+		encode_bin_list/3, signature_type_to_binary/1, binary_to_signature_type/1]).
 
 -include_lib("arweave/include/ar.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
+%%%===================================================================
+%%% Public interface.
+%%%===================================================================
+
+%% @doc Serialize the block.
 block_to_binary(#block{ indep_hash = H, previous_block = PrevH, timestamp = TS,
 		nonce = Nonce, height = Height, diff = Diff, cumulative_diff = CDiff,
 		last_retarget = LastRetarget, hash = Hash, block_size = BlockSize,
 		weave_size = WeaveSize, reward_addr = Addr, tx_root = TXRoot,
 		wallet_list = WalletList, hash_list_merkle = HashListMerkle,
-		reward_pool = RewardPool,
-		packing_2_5_threshold = Threshold,
+		reward_pool = RewardPool, packing_2_5_threshold = Threshold,
+		packing_2_6_threshold = Packing_2_6_Threshold,
 		strict_data_split_threshold = StrictChunkThreshold,
-		usd_to_ar_rate = Rate,
-		scheduled_usd_to_ar_rate = ScheduledRate,
+		usd_to_ar_rate = Rate, scheduled_usd_to_ar_rate = ScheduledRate,
 		poa = #poa{ option = Option, chunk = Chunk, data_path = DataPath,
-				tx_path = TXPath }, tags = Tags, txs = TXs }) ->
+				tx_path = TXPath }, tags = Tags, txs = TXs } = B) ->
 	Addr2 = case Addr of unclaimed -> <<>>; _ -> Addr end,
 	{RateDividend, RateDivisor} = case Rate of undefined -> {undefined, undefined};
 			_ -> Rate end,
@@ -44,8 +47,15 @@ block_to_binary(#block{ indep_hash = H, previous_block = PrevH, timestamp = TS,
 				_ ->
 					ScheduledRate
 			end,
+	Nonce2 =
+		case {Height >= ar_fork:height_2_6(), Packing_2_6_Threshold == 0} of
+			{true, true} ->
+				binary:encode_unsigned(Nonce);
+			_ ->
+				Nonce
+		end,
 	<< H:48/binary, (encode_bin(PrevH, 8))/binary, (encode_int(TS, 8))/binary,
-			(encode_bin(Nonce, 16))/binary, (encode_int(Height, 8))/binary,
+			(encode_bin(Nonce2, 16))/binary, (encode_int(Height, 8))/binary,
 			(encode_int(Diff, 16))/binary, (encode_int(CDiff, 16))/binary,
 			(encode_int(LastRetarget, 8))/binary, (encode_bin(Hash, 8))/binary,
 			(encode_int(BlockSize, 16))/binary, (encode_int(WeaveSize, 16))/binary,
@@ -59,7 +69,230 @@ block_to_binary(#block{ indep_hash = H, previous_block = PrevH, timestamp = TS,
 			(encode_int(ScheduledRateDivisor, 8))/binary, (encode_int(Option, 8))/binary,
 			(encode_bin(Chunk, 24))/binary, (encode_bin(TXPath, 24))/binary,
 			(encode_bin(DataPath, 24))/binary, (encode_bin_list(Tags, 16, 16))/binary,
-			(encode_transactions(TXs))/binary >>.
+			(encode_transactions(TXs))/binary, (encode_2_6_fields(B))/binary,
+			(encode_post_repacking_2_6_fields(B))/binary >>.
+
+%% @doc Deserialize the block.
+binary_to_block(<< H:48/binary, PrevHSize:8, PrevH:PrevHSize/binary,
+		TSSize:8, TS:(TSSize * 8),
+		NonceSize:16, Nonce:NonceSize/binary,
+		HeightSize:8, Height:(HeightSize * 8),
+		DiffSize:16, Diff:(DiffSize * 8),
+		CDiffSize:16, CDiff:(CDiffSize * 8),
+		LastRetargetSize:8, LastRetarget:(LastRetargetSize * 8),
+		HashSize:8, Hash:HashSize/binary,
+		BlockSizeSize:16, BlockSize:(BlockSizeSize * 8),
+		WeaveSizeSize:16, WeaveSize:(WeaveSizeSize * 8),
+		AddrSize:8, Addr:AddrSize/binary,
+		TXRootSize:8, TXRoot:TXRootSize/binary, % 0 or 32
+		WalletListSize:8, WalletList:WalletListSize/binary,
+		HashListMerkleSize:8, HashListMerkle:HashListMerkleSize/binary,
+		RewardPoolSize:8, RewardPool:(RewardPoolSize * 8),
+		PackingThresholdSize:8, Threshold:(PackingThresholdSize * 8),
+		StrictChunkThresholdSize:8, StrictChunkThreshold:(StrictChunkThresholdSize * 8),
+		RateDividendSize:8, RateDividend:(RateDividendSize * 8),
+		RateDivisorSize:8, RateDivisor:(RateDivisorSize * 8),
+		SchedRateDividendSize:8, SchedRateDividend:(SchedRateDividendSize * 8),
+		SchedRateDivisorSize:8, SchedRateDivisor:(SchedRateDivisorSize * 8),
+		PoAOptionSize:8, PoAOption:(PoAOptionSize * 8),
+		ChunkSize:24, Chunk:ChunkSize/binary,
+		TXPathSize:24, TXPath:TXPathSize/binary,
+		DataPathSize:24, DataPath:DataPathSize/binary,
+		Rest/binary >>) when NonceSize =< 512 ->
+	Threshold2 = case PackingThresholdSize of 0 -> undefined; _ -> Threshold end,
+	StrictChunkThreshold2 = case StrictChunkThresholdSize of 0 -> undefined;
+			_ -> StrictChunkThreshold end,
+	Rate = case RateDivisorSize of 0 -> undefined;
+			_ -> {RateDividend, RateDivisor} end,
+	ScheduledRate = case SchedRateDivisorSize of 0 -> undefined;
+			_ -> {SchedRateDividend, SchedRateDivisor} end,
+	Addr2 = case Addr of <<>> -> unclaimed; _ -> Addr end,
+	B = #block{ indep_hash = H, previous_block = PrevH, timestamp = TS,
+			nonce = Nonce, height = Height, diff = Diff, cumulative_diff = CDiff,
+			last_retarget = LastRetarget, hash = Hash, block_size = BlockSize,
+			weave_size = WeaveSize, reward_addr = Addr2, tx_root = TXRoot,
+			wallet_list = WalletList, hash_list_merkle = HashListMerkle,
+			reward_pool = RewardPool, packing_2_5_threshold = Threshold2,
+			strict_data_split_threshold = StrictChunkThreshold2,
+			usd_to_ar_rate = Rate, scheduled_usd_to_ar_rate = ScheduledRate,
+			poa = #poa{ option = PoAOption, chunk = Chunk, data_path = DataPath,
+					tx_path = TXPath }},
+	parse_block_tags_transactions(Rest, B);
+binary_to_block(_Bin) ->
+	{error, invalid_block_input}.
+
+%% @doc Convert a block record into a JSON struct.
+block_to_json_struct(
+	#block{
+		nonce = Nonce,
+		previous_block = PrevHash,
+		timestamp = TimeStamp,
+		last_retarget = LastRetarget,
+		diff = Diff,
+		height = Height,
+		hash = Hash,
+		indep_hash = IndepHash,
+		txs = TXs,
+		tx_root = TXRoot,
+		wallet_list = WalletList,
+		reward_addr = RewardAddr,
+		tags = Tags,
+		reward_pool = RewardPool,
+		weave_size = WeaveSize,
+		block_size = BlockSize,
+		cumulative_diff = CDiff,
+		hash_list_merkle = MR,
+		poa = POA
+	} = B) ->
+	{JSONDiff, JSONCDiff} =
+		case Height >= ar_fork:height_1_8() of
+			true ->
+				{integer_to_binary(Diff), integer_to_binary(CDiff)};
+			false ->
+				{Diff, CDiff}
+	end,
+	{JSONRewardPool, JSONBlockSize, JSONWeaveSize} =
+		case Height >= ar_fork:height_2_4() of
+			true ->
+				{integer_to_binary(RewardPool), integer_to_binary(BlockSize),
+					integer_to_binary(WeaveSize)};
+			false ->
+				{RewardPool, BlockSize, WeaveSize}
+	end,
+	Tags =
+		case Height >= ar_fork:height_2_5() of
+			true ->
+				[ar_util:encode(Tag) || Tag <- Tags];
+			false ->
+				Tags
+		end,
+	JSONElements =
+		[{nonce, ar_util:encode(Nonce)}, {previous_block, ar_util:encode(PrevHash)},
+				{timestamp, TimeStamp}, {last_retarget, LastRetarget}, {diff, JSONDiff},
+				{height, Height}, {hash, ar_util:encode(Hash)},
+				{indep_hash, ar_util:encode(IndepHash)},
+				{txs,
+					lists:map(
+						fun(TXID) when is_binary(TXID) ->
+							ar_util:encode(TXID);
+						(TX) ->
+							ar_util:encode(TX#tx.id)
+						end,
+						TXs
+					)
+				}, {tx_root, ar_util:encode(TXRoot)}, {tx_tree, []},
+				{wallet_list, ar_util:encode(WalletList)},
+				{reward_addr,
+					case RewardAddr of unclaimed -> list_to_binary("unclaimed");
+							_ -> ar_util:encode(RewardAddr) end}, {tags, Tags},
+				{reward_pool, JSONRewardPool}, {weave_size, JSONWeaveSize},
+				{block_size, JSONBlockSize}, {cumulative_diff, JSONCDiff},
+				{hash_list_merkle, ar_util:encode(MR)}, {poa, poa_to_json_struct(POA)}],
+	JSONElements2 =
+		case Height < ?FORK_1_6 of
+			true ->
+				KeysToDelete = [cumulative_diff, hash_list_merkle],
+				delete_keys(KeysToDelete, JSONElements);
+			false ->
+				JSONElements
+		end,
+	JSONElements3 =
+		case Height >= ar_fork:height_2_4() of
+			true ->
+				delete_keys([tx_tree], JSONElements2);
+			false ->
+				JSONElements2
+		end,
+	JSONElements4 =
+		case Height >= ar_fork:height_2_5() of
+			true ->
+				{RateDividend, RateDivisor} = B#block.usd_to_ar_rate,
+				{ScheduledRateDividend, ScheduledRateDivisor} = B#block.scheduled_usd_to_ar_rate,
+				[
+					{usd_to_ar_rate,
+						[integer_to_binary(RateDividend), integer_to_binary(RateDivisor)]},
+					{scheduled_usd_to_ar_rate,
+						[integer_to_binary(ScheduledRateDividend),
+							integer_to_binary(ScheduledRateDivisor)]},
+					{packing_2_5_threshold, integer_to_binary(B#block.packing_2_5_threshold)},
+					{strict_data_split_threshold,
+							integer_to_binary(B#block.strict_data_split_threshold)}
+					| JSONElements3
+				];
+			false ->
+				JSONElements3
+		end,
+	JSONElements5 =
+		case Height >= ar_fork:height_2_6() of
+			true ->
+				[{packing_2_6_threshold, integer_to_binary(B#block.packing_2_6_threshold)},
+						{hash_preimage, ar_util:encode(B#block.hash_preimage)},
+						{recall_byte, B#block.recall_byte},
+						{reward, B#block.reward} | JSONElements4];
+			false ->
+				JSONElements4
+		end,
+	JSONElements6 =
+		case ar_block:is_2_6_repacking_complete(B) of
+			true ->
+				JSONElements5_ =
+					[{previous_solution_hash, ar_util:encode(B#block.previous_solution_hash)},
+							{search_space_number, B#block.search_space_number},
+							{nonce_limiter_info, nonce_limiter_info_to_json_struct(
+									B#block.nonce_limiter_info)},
+							{poa2, poa_to_json_struct(B#block.poa2)},
+							{signature, ar_util:encode(B#block.signature)},
+							{reward_key, ar_util:encode(element(2, B#block.reward_key))}
+							| JSONElements5],
+				case B#block.recall_byte2 of
+					undefined ->
+						JSONElements5_;
+					RecallByte2 ->
+						[{recall_byte2, integer_to_binary(RecallByte2)} | JSONElements5_]
+				end;
+			false ->
+				JSONElements5
+		end,
+	{JSONElements6}.
+
+%%%===================================================================
+%%% Private functions.
+%%%===================================================================
+
+encode_2_6_fields(#block{ height = Height, packing_2_6_threshold = Packing_2_6_Threshold,
+		hash_preimage = HashPreimage, recall_byte = RecallByte, reward = Reward }) ->
+	case Height >= ar_fork:height_2_6() of
+		false ->
+			<<>>;
+		true ->
+			<< (encode_int(Packing_2_6_Threshold, 8))/binary, HashPreimage:32/binary,
+				(encode_int(RecallByte, 16))/binary, (encode_int(Reward, 8))/binary >>
+	end.
+
+encode_post_repacking_2_6_fields(#block{ height = Height,
+		packing_2_6_threshold = Packing_2_6_Threshold,
+		previous_solution_hash = PreviousSolutionHash, search_space_number = SearchSpaceNumber,
+		signature = Sig, nonce_limiter_info = NonceLimiterInfo,
+		reward_key = {_Type, RewardKey}, poa2 = #poa{ chunk = Chunk, data_path = DataPath,
+			tx_path = TXPath }, recall_byte2 = RecallByte2 }) ->
+	case {Height >= ar_fork:height_2_6(), Packing_2_6_Threshold == 0} of
+		{true, true} ->
+			<< (encode_bin(Sig, 8))/binary, (encode_int(RecallByte2, 16))/binary,
+				(encode_bin(PreviousSolutionHash, 8))/binary,
+				(encode_int(SearchSpaceNumber, 8))/binary,
+				(encode_nonce_limiter_info(NonceLimiterInfo))/binary,
+				(encode_bin(Chunk, 24))/binary, (encode_bin(RewardKey, 8))/binary,
+				(encode_bin(TXPath, 24))/binary, (encode_bin(DataPath, 24))/binary >>;
+		_ ->
+			<<>>
+	end.
+
+encode_nonce_limiter_info(#nonce_limiter_info{ length = Len,
+		last_step_checkpoints = LCheckpoints, checkpoints = Checkpoints }) ->
+	LCheckpointsLen = length(LCheckpoints),
+	CheckpointsLen = length(Checkpoints),
+	<< Len:16, LCheckpointsLen:16, (iolist_to_binary(LCheckpoints))/binary,
+			CheckpointsLen:16, (iolist_to_binary(Checkpoints))/binary >>.
 
 encode_int(undefined, SizeBits) ->
 	<< 0:SizeBits >>;
@@ -72,14 +305,14 @@ encode_bin(undefined, SizeBits) ->
 encode_bin(Bin, SizeBits) ->
 	<< (byte_size(Bin)):SizeBits, Bin/binary >>.
 
-encode_bin_list(Tags, LenBits, ElemSizeBits) ->
-	encode_bin_list(Tags, [], 0, LenBits, ElemSizeBits).
+encode_bin_list(Bins, LenBits, ElemSizeBits) ->
+	encode_bin_list(Bins, [], 0, LenBits, ElemSizeBits).
 
 encode_bin_list([], Encoded, N, LenBits, _ElemSizeBits) ->
 	<< N:LenBits, (iolist_to_binary(Encoded))/binary >>;
-encode_bin_list([Tag | Tags], Encoded, N, LenBits, ElemSizeBits) ->
-	encode_bin_list(Tags, [encode_bin(Tag, ElemSizeBits) | Encoded], N + 1, LenBits,
-			ElemSizeBits).
+encode_bin_list([Bin | Bins], Encoded, N, LenBits, ElemSizeBits) ->
+	Elem = encode_bin(Bin, ElemSizeBits),
+	encode_bin_list(Bins, [Elem | Encoded], N + 1, LenBits, ElemSizeBits).
 
 encode_transactions(TXs) ->
 	encode_transactions(TXs, [], 0).
@@ -123,54 +356,6 @@ encode_signature_type({?ECDSA_SIGN_ALG, secp256k1}) ->
 encode_signature_type({?EDDSA_SIGN_ALG, ed25519}) ->
 	<< 2:8 >>.
 
-binary_to_block(<< H:48/binary, PrevHSize:8, PrevH:PrevHSize/binary,
-		TSSize:8, TS:(TSSize * 8),
-		NonceSize:16, Nonce:NonceSize/binary,
-		HeightSize:8, Height:(HeightSize * 8),
-		DiffSize:16, Diff:(DiffSize * 8),
-		CDiffSize:16, CDiff:(CDiffSize * 8),
-		LastRetargetSize:8, LastRetarget:(LastRetargetSize * 8),
-		HashSize:8, Hash:HashSize/binary,
-		BlockSizeSize:16, BlockSize:(BlockSizeSize * 8),
-		WeaveSizeSize:16, WeaveSize:(WeaveSizeSize * 8),
-		AddrSize:8, Addr:AddrSize/binary,
-		TXRootSize:8, TXRoot:TXRootSize/binary, % 0 or 32
-		WalletListSize:8, WalletList:WalletListSize/binary,
-		HashListMerkleSize:8, HashListMerkle:HashListMerkleSize/binary,
-		RewardPoolSize:8, RewardPool:(RewardPoolSize * 8),
-		PackingThresholdSize:8, Threshold:(PackingThresholdSize * 8),
-		StrictChunkThresholdSize:8, StrictChunkThreshold:(StrictChunkThresholdSize * 8),
-		RateDividendSize:8, RateDividend:(RateDividendSize * 8),
-		RateDivisorSize:8, RateDivisor:(RateDivisorSize * 8),
-		SchedRateDividendSize:8, SchedRateDividend:(SchedRateDividendSize * 8),
-		SchedRateDivisorSize:8, SchedRateDivisor:(SchedRateDivisorSize * 8),
-		PoAOptionSize:8, PoAOption:(PoAOptionSize * 8),
-		ChunkSize:24, Chunk:ChunkSize/binary,
-		TXPathSize:24, TXPath:TXPathSize/binary,
-		DataPathSize:24, DataPath:DataPathSize/binary,
-		Rest/binary >>) when NonceSize =< 512 ->
-	Threshold2 = case PackingThresholdSize of 0 -> undefined; _ -> Threshold end,
-	StrictChunkThreshold2 = case StrictChunkThresholdSize of 0 -> undefined;
-			_ -> StrictChunkThreshold end,
-	Rate = case RateDivisorSize of 0 -> undefined;
-			_ -> {RateDividend, RateDivisor} end,
-	ScheduledRate = case SchedRateDivisor of 0 -> undefined;
-			_ -> {SchedRateDividend, SchedRateDivisor} end,
-	Addr2 = case Addr of <<>> -> unclaimed; _ -> Addr end,
-	B = #block{ indep_hash = H, previous_block = PrevH, timestamp = TS,
-			nonce = Nonce, height = Height, diff = Diff, cumulative_diff = CDiff,
-			last_retarget = LastRetarget, hash = Hash, block_size = BlockSize,
-			weave_size = WeaveSize, reward_addr = Addr2, tx_root = TXRoot,
-			wallet_list = WalletList, hash_list_merkle = HashListMerkle,
-			reward_pool = RewardPool, packing_2_5_threshold = Threshold2,
-			strict_data_split_threshold = StrictChunkThreshold2,
-			usd_to_ar_rate = Rate, scheduled_usd_to_ar_rate = ScheduledRate,
-			poa = #poa{ option = PoAOption, chunk = Chunk, data_path = DataPath,
-					tx_path = TXPath }},
-	parse_block_tags_transactions(Rest, B);
-binary_to_block(_Bin) ->
-	{error, invalid_block_input}.
-
 parse_block_tags_transactions(Bin, B) ->
 	case parse_block_tags(Bin) of
 		{error, Reason} ->
@@ -180,12 +365,75 @@ parse_block_tags_transactions(Bin, B) ->
 	end.
 
 parse_block_transactions(Bin, B) ->
-	case parse_block_transactions(Bin) of
-		{error, Reason} ->
+	case {parse_block_transactions(Bin), B#block.height < ar_fork:height_2_6()} of
+		{{error, Reason}, _} ->
 			{error, Reason};
-		{ok, TXs} ->
-			{ok, B#block{ txs = TXs }}
+		{{ok, TXs, <<>>}, true} ->
+			{ok, B#block{ txs = TXs }};
+		{{ok, TXs, Rest}, false} ->
+			parse_block_2_6_fields(B#block{ txs = TXs }, Rest);
+		_ ->
+			{error, invalid_input}
 	end.
+
+parse_block_2_6_fields(B, << Size:8, Packing_2_6_Threshold:(Size * 8), HashPreimage:32/binary,
+		RecallByteSize:16, RecallByte:(RecallByteSize * 8), RewardSize:8,
+		Reward:(RewardSize * 8), Rest/binary >>) ->
+	B2 = B#block{ packing_2_6_threshold = Packing_2_6_Threshold, hash_preimage = HashPreimage,
+			recall_byte = RecallByte, reward = Reward },
+	case {Rest, Packing_2_6_Threshold == 0} of
+		{<<>>, false} ->
+			{ok, B2};
+		{<<>>, true} ->
+			{error, invalid_input};
+		{_, true} ->
+			parse_post_repacking_2_6_fields(B2, Rest);
+		{_, false} ->
+			{error, invalid_input}
+	end;
+parse_block_2_6_fields(_B, _Rest) ->
+	{error, invalid_input}.
+
+parse_post_repacking_2_6_fields(B, << SigSize:8, Sig:SigSize/binary, RecallByte2Size:16,
+		RecallByte2:(RecallByte2Size * 8), PreviousSolutionHashSize:8,
+		PreviousSolutionHash:PreviousSolutionHashSize/binary, SearchSpaceNumberSize:8,
+		SearchSpaceNumber:(SearchSpaceNumberSize * 8), NonceLimiterLen:16,
+		LastCheckpointsLen:16, LastCheckpoints:(LastCheckpointsLen * 32)/binary,
+		CheckpointsLen:16, Checkpoints:(CheckpointsLen * 32)/binary,
+		ChunkSize:24, Chunk:ChunkSize/binary, RewardKeySize:8,
+		RewardKey:RewardKeySize/binary, TXPathSize:24, TXPath:TXPathSize/binary,
+		DataPathSize:24, DataPath:DataPathSize/binary >>) ->
+	case parse_reward_key(B#block.reward_addr, RewardKey) of
+		{ok, RewardKey2} ->
+			Nonce = binary:decode_unsigned(B#block.nonce),
+			NonceLimiterInfo = #nonce_limiter_info{ length = NonceLimiterLen,
+					last_step_checkpoints = parse_checkpoints(LastCheckpoints),
+					checkpoints = parse_checkpoints(Checkpoints) },
+			{ok, B#block{ nonce = Nonce, recall_byte2 = RecallByte2,
+					previous_solution_hash = PreviousSolutionHash,
+					signature = Sig, search_space_number = SearchSpaceNumber,
+					reward_key = RewardKey2, nonce_limiter_info = NonceLimiterInfo,
+					poa2 = #poa{ chunk = Chunk, data_path = DataPath, tx_path = TXPath } }};
+		Error ->
+			Error
+	end;
+parse_post_repacking_2_6_fields(_B, _Bin) ->
+	{error, invalid_input}.
+
+parse_checkpoints(<< Checkpoint:32 >>) ->
+	%% The block must have at least one checkpoint (the last nonce limiter output).
+	[<< Checkpoint:32 >>];
+parse_checkpoints(<< Checkpoint:32, Rest/binary >>) ->
+	[Checkpoint | parse_checkpoints(Rest)].
+
+parse_reward_key(<< TypeByte:1/binary, _Addr:32/binary >>, Key)
+		when TypeByte == (?ECDSA_TYPE_BYTE) ->
+	{ok, {{?ECDSA_SIGN_ALG, secp256k1}, Key}};
+parse_reward_key(<< TypeByte:1/binary, _Addr:32/binary >>, Key)
+		when TypeByte == (?EDDSA_TYPE_BYTE) ->
+	{ok, {{?EDDSA_SIGN_ALG, ed25519}, Key}};
+parse_reward_key(_Addr, _Key) ->
+	{error, invalid_reward_addr}.
 
 parse_block_tags(<< TagsLen:16, Rest/binary >>) when TagsLen =< 2048 ->
 	parse_block_tags(TagsLen, Rest, []);
@@ -204,8 +452,8 @@ parse_block_transactions(<< Count:16, Rest/binary >>) when Count =< 1000 ->
 parse_block_transactions(_Bin) ->
 	{error, invalid_transactions_input}.
 
-parse_block_transactions(0, <<>>, TXs) ->
-	{ok, TXs};
+parse_block_transactions(0, Rest, TXs) ->
+	{ok, TXs, Rest};
 parse_block_transactions(N, << Size:24, Bin:Size/binary, Rest/binary >>, TXs)
 		when N > 0 ->
 	case parse_tx(Bin) of
@@ -282,9 +530,10 @@ binary_to_tx(_Rest) ->
 	{error, invalid_input}.
 
 block_announcement_to_binary(#block_announcement{ indep_hash = H,
-		previous_block = PrevH, tx_prefixes = L, recall_byte = O }) ->
+		previous_block = PrevH, tx_prefixes = L, recall_byte = O, recall_byte2 = O2 }) ->
 	<< H:48/binary, PrevH:48/binary, (encode_int(O, 8))/binary,
-			(encode_tx_prefixes(L))/binary >>.
+			(encode_tx_prefixes(L))/binary, (case O2 of undefined -> <<>>;
+					_ -> encode_int(O2, 8) end)/binary >>.
 
 encode_tx_prefixes(L) ->
 	<< (length(L)):16, (encode_tx_prefixes(L, []))/binary >>.
@@ -297,52 +546,72 @@ encode_tx_prefixes([Prefix | Prefixes], Encoded) ->
 binary_to_block_announcement(<< H:48/binary, PrevH:48/binary,
 		RecallByteSize:8, RecallByte:(RecallByteSize * 8), N:16, Rest/binary >>) ->
 	RecallByte2 = case RecallByteSize of 0 -> undefined; _ -> RecallByte end,
-	case parse_tx_prefixes(N, Rest) of
+	case parse_tx_prefixes_and_recall_byte2(N, Rest) of
 		{error, Reason} ->
 			{error, Reason};
-		{ok, Prefixes} ->
+		{ok, {Prefixes, RecallByte3}} ->
 			{ok, #block_announcement{ indep_hash = H, previous_block = PrevH,
-					recall_byte = RecallByte2, tx_prefixes = Prefixes }}
+					recall_byte = RecallByte2, tx_prefixes = Prefixes,
+					recall_byte2 = RecallByte3 }}
 	end;
 binary_to_block_announcement(_Rest) ->
 	{error, invalid_input}.
 
-parse_tx_prefixes(N, Bin) ->
-	parse_tx_prefixes(N, Bin, []).
+parse_tx_prefixes_and_recall_byte2(N, Bin) ->
+	parse_tx_prefixes_and_recall_byte2(N, Bin, []).
 
-parse_tx_prefixes(0, <<>>, Prefixes) ->
-	{ok, Prefixes};
-parse_tx_prefixes(N, << Prefix:8/binary, Rest/binary >>, Prefixes) when N > 0 ->
-	parse_tx_prefixes(N - 1, Rest, [Prefix | Prefixes]);
-parse_tx_prefixes(_N, _Rest, _Prefixes) ->
+parse_tx_prefixes_and_recall_byte2(0, Rest, Prefixes) ->
+	case Rest of
+		<<>> ->
+			{ok, {Prefixes, undefined}};
+		<< RecallByte2Size:8, RecallByte2:(RecallByte2Size * 8) >> ->
+			{ok, {Prefixes, RecallByte2}};
+		_ ->
+			{error, invalid_recall_byte2_input}
+	end;
+parse_tx_prefixes_and_recall_byte2(N, << Prefix:8/binary, Rest/binary >>, Prefixes)
+		when N > 0 ->
+	parse_tx_prefixes_and_recall_byte2(N - 1, Rest, [Prefix | Prefixes]);
+parse_tx_prefixes_and_recall_byte2(_N, _Rest, _Prefixes) ->
 	{error, invalid_tx_prefixes_input}.
 
 binary_to_block_announcement_response(<< ChunkMissing:8, Rest/binary >>)
 		when ChunkMissing == 1 orelse ChunkMissing == 0 ->
 	ChunkMissing2 = case ChunkMissing of 1 -> true; _ -> false end,
-	case parse_missing_tx_indices(Rest) of
-		{ok, Indices} ->
+	case parse_missing_tx_indices_and_missing_chunk2(Rest) of
+		{ok, {Indices, MissingChunk2}} ->
 			{ok, #block_announcement_response{ missing_chunk = ChunkMissing2,
-					missing_tx_indices = Indices }};
+					missing_tx_indices = Indices, missing_chunk2 = MissingChunk2 }};
 		{error, Reason} ->
 			{error, Reason}
 	end;
 binary_to_block_announcement_response(_Rest) ->
 	{error, invalid_block_announcement_response_input}.
 
-parse_missing_tx_indices(Bin) ->
-	parse_missing_tx_indices(Bin, []).
+parse_missing_tx_indices_and_missing_chunk2(Bin) ->
+	parse_missing_tx_indices_and_missing_chunk2(Bin, []).
 
-parse_missing_tx_indices(<<>>, Indices) ->
-	{ok, Indices};
-parse_missing_tx_indices(<< Index:16, Rest/binary >>, Indices) ->
-	parse_missing_tx_indices(Rest, [Index | Indices]);
-parse_missing_tx_indices(_Rest, _Indices) ->
+parse_missing_tx_indices_and_missing_chunk2(<<>>, Indices) ->
+	{ok, {Indices, undefined}};
+parse_missing_tx_indices_and_missing_chunk2(<< MissingChunk2:8 >>, Indices) ->
+	case MissingChunk2 of
+		0 ->
+			{ok, {Indices, false}};
+		1 ->
+			{ok, {Indices, true}};
+		_ ->
+			{error, invalid_missing_chunk2_input}
+	end;
+parse_missing_tx_indices_and_missing_chunk2(<< Index:16, Rest/binary >>, Indices) ->
+	parse_missing_tx_indices_and_missing_chunk2(Rest, [Index | Indices]);
+parse_missing_tx_indices_and_missing_chunk2(_Rest, _Indices) ->
 	{error, invalid_missing_tx_indices_input}.
 
 block_announcement_response_to_binary(#block_announcement_response{
-		missing_tx_indices = L, missing_chunk = Reply }) ->
-	<< (case Reply of true -> 1; _ -> 0 end):8, (encode_missing_tx_indices(L))/binary >>.
+		missing_tx_indices = L, missing_chunk = Reply, missing_chunk2 = Reply2 }) ->
+	<< (case Reply of true -> 1; _ -> 0 end):8, (encode_missing_tx_indices(L))/binary,
+			(case Reply2 of undefined -> <<>>; false -> << 0:8 >>;
+					true -> << 1:8 >> end)/binary >>.
 
 encode_missing_tx_indices(L) ->
 	encode_missing_tx_indices(L, []).
@@ -354,20 +623,45 @@ encode_missing_tx_indices([Index | Indices], Encoded) ->
 
 poa_to_binary(#{ chunk := Chunk, tx_path := TXPath, data_path := DataPath,
 		packing := Packing }) ->
-	Packing2 = case Packing of unpacked -> <<"unpacked">>;
-			spora_2_5 -> <<"spora_2_5">> end,
+	Packing2 =
+		case Packing of
+			unpacked ->
+				<<"unpacked">>;
+			spora_2_5 ->
+				<<"spora_2_5">>;
+			{spora_2_6, Addr} ->
+				iolist_to_binary([<<"spora_2_6_">>, ar_util:encode(Addr)])
+		end,
 	<< (encode_bin(Chunk, 24))/binary, (encode_bin(TXPath, 24))/binary,
 			(encode_bin(DataPath, 24))/binary, (encode_bin(Packing2, 8))/binary >>.
 
 binary_to_poa(<< ChunkSize:24, Chunk:ChunkSize/binary,
 		TXPathSize:24, TXPath:TXPathSize/binary,
 		DataPathSize:24, DataPath:DataPathSize/binary,
-		PackingSize:8, Packing:PackingSize/binary >>)
-		when Packing == <<"unpacked">> orelse Packing == <<"spora_2_5">> ->
-	Packing2 = case Packing of <<"unpacked">> -> unpacked;
-			<<"spora_2_5">> -> spora_2_5 end,
-	{ok, #{ chunk => Chunk, data_path => DataPath, tx_path => TXPath,
-			packing => Packing2 }};
+		PackingSize:8, Packing:PackingSize/binary >>) ->
+	Packing2 =
+		case Packing of
+			<<"unpacked">> ->
+				unpacked;
+			<<"spora_2_5">> ->
+				spora_2_5;
+			<< Type:10/binary, Addr:44/binary >> when Type == <<"spora_2_6_">> ->
+				case ar_util:safe_decode(Addr) of
+					{ok, DecodedAddr} ->
+						{spora_2_6, DecodedAddr};
+					_ ->
+						error
+				end;
+			_ ->
+				error
+		end,
+	case Packing2 of
+		error ->
+			{error, invalid_packing};
+		_ ->
+			{ok, #{ chunk => Chunk, data_path => DataPath, tx_path => TXPath,
+					packing => Packing2 }}
+	end;
 binary_to_poa(_Rest) ->
 	{error, invalid_input}.
 
@@ -421,123 +715,6 @@ json_decode(JSON, Opts) ->
 			{ok, DecodedJSON}
 	end.
 
-%% @doc Convert a block record into a JSON struct.
-block_to_json_struct(
-	#block{
-		nonce = Nonce,
-		previous_block = PrevHash,
-		timestamp = TimeStamp,
-		last_retarget = LastRetarget,
-		diff = Diff,
-		height = Height,
-		hash = Hash,
-		indep_hash = IndepHash,
-		txs = TXs,
-		tx_root = TXRoot,
-		wallet_list = WalletList,
-		reward_addr = RewardAddr,
-		tags = Tags,
-		reward_pool = RewardPool,
-		weave_size = WeaveSize,
-		block_size = BlockSize,
-		cumulative_diff = CDiff,
-		hash_list_merkle = MR,
-		poa = POA
-	} = B) ->
-	{JSONDiff, JSONCDiff} =
-		case Height >= ar_fork:height_1_8() of
-			true ->
-				{integer_to_binary(Diff), integer_to_binary(CDiff)};
-			false ->
-				{Diff, CDiff}
-	end,
-	{JSONRewardPool, JSONBlockSize, JSONWeaveSize} =
-		case Height >= ar_fork:height_2_4() of
-			true ->
-				{integer_to_binary(RewardPool), integer_to_binary(BlockSize),
-					integer_to_binary(WeaveSize)};
-			false ->
-				{RewardPool, BlockSize, WeaveSize}
-	end,
-	Tags =
-		case Height >= ar_fork:height_2_5() of
-			true ->
-				[ar_util:encode(Tag) || Tag <- Tags];
-			false ->
-				Tags
-		end,
-	JSONElements =
-		[
-			{nonce, ar_util:encode(Nonce)},
-			{previous_block, ar_util:encode(PrevHash)},
-			{timestamp, TimeStamp},
-			{last_retarget, LastRetarget},
-			{diff, JSONDiff},
-			{height, Height},
-			{hash, ar_util:encode(Hash)},
-			{indep_hash, ar_util:encode(IndepHash)},
-			{txs,
-				lists:map(
-					fun(TXID) when is_binary(TXID) ->
-						ar_util:encode(TXID);
-					(TX) ->
-						ar_util:encode(TX#tx.id)
-					end,
-					TXs
-				)
-			},
-			{tx_root, ar_util:encode(TXRoot)},
-			{tx_tree, []},
-			{wallet_list, ar_util:encode(WalletList)},
-			{reward_addr,
-				if RewardAddr == unclaimed -> list_to_binary("unclaimed");
-				true -> ar_util:encode(RewardAddr)
-				end
-			},
-			{tags, Tags},
-			{reward_pool, JSONRewardPool},
-			{weave_size, JSONWeaveSize},
-			{block_size, JSONBlockSize},
-			{cumulative_diff, JSONCDiff},
-			{hash_list_merkle, ar_util:encode(MR)},
-			{poa, poa_to_json_struct(POA)}
-		],
-	JSONElements2 =
-		case Height < ?FORK_1_6 of
-			true ->
-				KeysToDelete = [cumulative_diff, hash_list_merkle],
-				delete_keys(KeysToDelete, JSONElements);
-			false ->
-				JSONElements
-		end,
-	JSONElements3 =
-		case Height >= ar_fork:height_2_4() of
-			true ->
-				delete_keys([tx_tree], JSONElements2);
-			false ->
-				JSONElements2
-		end,
-	JSONElements4 =
-		case Height >= ar_fork:height_2_5() of
-			true ->
-				{RateDividend, RateDivisor} = B#block.usd_to_ar_rate,
-				{ScheduledRateDividend, ScheduledRateDivisor} = B#block.scheduled_usd_to_ar_rate,
-				[
-					{usd_to_ar_rate,
-						[integer_to_binary(RateDividend), integer_to_binary(RateDivisor)]},
-					{scheduled_usd_to_ar_rate,
-						[integer_to_binary(ScheduledRateDividend),
-							integer_to_binary(ScheduledRateDivisor)]},
-					{packing_2_5_threshold, integer_to_binary(B#block.packing_2_5_threshold)},
-					{strict_data_split_threshold,
-							integer_to_binary(B#block.strict_data_split_threshold)}
-					| JSONElements3
-				];
-			false ->
-				JSONElements3
-		end,
-	{JSONElements4}.
-
 delete_keys([], Proplist) ->
 	Proplist;
 delete_keys([Key | Keys], Proplist) ->
@@ -551,7 +728,7 @@ json_struct_to_block(JSONBlock) when is_binary(JSONBlock) ->
 	json_struct_to_block(dejsonify(JSONBlock));
 json_struct_to_block({BlockStruct}) ->
 	Height = find_value(<<"height">>, BlockStruct),
-	true = is_integer(Height),
+	true = is_integer(Height) andalso Height < ar_fork:height_2_6(),
 	Fork_2_5 = ar_fork:height_2_5(),
 	TXIDs = find_value(<<"txs">>, BlockStruct),
 	WalletList = find_value(<<"wallet_list">>, BlockStruct),
@@ -587,7 +764,14 @@ json_struct_to_block({BlockStruct}) ->
 	RewardAddr =
 		case find_value(<<"reward_addr">>, BlockStruct) of
 			<<"unclaimed">> -> unclaimed;
-			AddrBinary -> ar_wallet:base64_address_with_optional_checksum_to_decoded_address(AddrBinary)
+			AddrBinary -> AddrBinary
+		end,
+	RewardAddr2 =
+		case RewardAddr of
+			unclaimed ->
+				unclaimed;
+			_ ->
+				ar_wallet:base64_address_with_optional_checksum_to_decoded_address(RewardAddr)
 		end,
 	{RewardPool, BlockSize, WeaveSize} =
 		case Height >= ar_fork:height_2_4() of
@@ -641,7 +825,7 @@ json_struct_to_block({BlockStruct}) ->
 				_		  -> [ar_util:decode(Hash) || Hash <- HashList]
 			end,
 		wallet_list = ar_util:decode(WalletList),
-		reward_addr = RewardAddr,
+		reward_addr = RewardAddr2,
 		tags = Tags,
 		reward_pool = RewardPool,
 		weave_size = WeaveSize,
@@ -725,6 +909,11 @@ poa_to_json_struct(POA) ->
 		{data_path, ar_util:encode(POA#poa.data_path)},
 		{chunk, ar_util:encode(POA#poa.chunk)}
 	]}.
+
+nonce_limiter_info_to_json_struct(#nonce_limiter_info{ length = Len,
+		last_step_checkpoints = L, checkpoints = C }) ->
+	{[{len, Len}, {last_step_checkpoints, [ar_util:encode(Elem) || Elem <- L]},
+			{checkpoints, [ar_util:encode(Elem) || Elem <- C]}]}.
 
 json_struct_to_poa({JSONStruct}) ->
 	#poa{
@@ -952,7 +1141,9 @@ chunk_proof_to_json_map(Map) ->
 			unpacked ->
 				<<"unpacked">>;
 			spora_2_5 ->
-				<<"spora_2_5">>
+				<<"spora_2_5">>;
+			{spora_2_6, Addr} ->
+				iolist_to_binary([<<"spora_2_6_">>, ar_util:encode(Addr)])
 		end,
 	#{
 		chunk => ar_util:encode(Chunk),
@@ -975,6 +1166,20 @@ json_map_to_chunk_proof(JSON) ->
 				maps:put(packing, unpacked, Map);
 			<<"spora_2_5">> ->
 				maps:put(packing, spora_2_5, Map);
+			<< Type:10/binary, Addr:44/binary >> when Type == <<"spora_2_6_">> ->
+				case ar_util:safe_decode(Addr) of
+					{ok, DecodedAddr} ->
+						maps:put(packing, {spora_2_6, DecodedAddr}, Map);
+					_ ->
+						error(unsupported_packing)
+				end;
+			<< Type:10/binary, Addr:44/binary >> when Type == <<"spora_2_6_">> ->
+				case ar_util:safe_decode(Addr) of
+					{ok, DecodedAddr} ->
+						maps:put(packing, {spora_2_6, DecodedAddr}, Map);
+					_ ->
+						error(unsupported_packing)
+				end;
 			_ ->
 				error(unsupported_packing)
 		end,
@@ -1016,7 +1221,7 @@ test_block_to_binary([], _TXFixtureDir) ->
 	ok;
 test_block_to_binary([Fixture | Fixtures], TXFixtureDir) ->
 	{ok, Bin} = file:read_file(Fixture),
-	B = binary_to_term(Bin),
+	B = ar_storage:migrate_block_record(binary_to_term(Bin)),
 	?debugFmt("Block ~s, height ~B.~n", [ar_util:encode(B#block.indep_hash),
 			B#block.height]),
 	test_block_to_binary(B),
@@ -1050,7 +1255,7 @@ test_block_to_binary([Fixture | Fixtures], TXFixtureDir) ->
 			|| TX <- BlockTXs] },
 	test_block_to_binary(B7),
 	B8 = B#block{ txs = [TX#tx{ signature_type = {?EDDSA_SIGN_ALG, ed25519} }
-			|| TX <- BlockTXs] },
+			|| TX <- BlockTXs], packing_2_6_threshold = 1 },
 	test_block_to_binary(B8),
 	test_block_to_binary(Fixtures, TXFixtureDir).
 
@@ -1092,7 +1297,13 @@ block_announcement_to_binary_test() ->
 	A4 = A3#block_announcement{ tx_prefixes = [crypto:strong_rand_bytes(8)
 			|| _ <- lists:seq(1, 1000)] },
 	?assertEqual({ok, A4}, binary_to_block_announcement(
-			block_announcement_to_binary(A4))).
+			block_announcement_to_binary(A4))),
+	A5 = A#block_announcement{ recall_byte2 = 1 },
+	?assertEqual({ok, A5}, binary_to_block_announcement(
+			block_announcement_to_binary(A5))),
+	A6 = A#block_announcement{ recall_byte2 = 1, recall_byte = 2 },
+	?assertEqual({ok, A6}, binary_to_block_announcement(
+			block_announcement_to_binary(A6))).
 
 block_announcement_response_to_binary_test() ->
 	A = #block_announcement_response{},
@@ -1101,7 +1312,15 @@ block_announcement_response_to_binary_test() ->
 	A2 = A#block_announcement_response{ missing_chunk = true,
 			missing_tx_indices = lists:seq(0, 999) },
 	?assertEqual({ok, A2}, binary_to_block_announcement_response(
-			block_announcement_response_to_binary(A2))).
+			block_announcement_response_to_binary(A2))),
+	A3 = A#block_announcement_response{ missing_chunk = true, missing_chunk2 = false,
+			missing_tx_indices = lists:seq(0, 1) },
+	?assertEqual({ok, A3}, binary_to_block_announcement_response(
+			block_announcement_response_to_binary(A3))),
+	A4 = A#block_announcement_response{ missing_chunk2 = true,
+			missing_tx_indices = [731] },
+	?assertEqual({ok, A4}, binary_to_block_announcement_response(
+			block_announcement_response_to_binary(A4))).
 
 poa_to_binary_test() ->
 	Proof = #{ chunk => crypto:strong_rand_bytes(1), data_path => <<>>,
@@ -1111,7 +1330,9 @@ poa_to_binary_test() ->
 	?assertEqual({ok, Proof2}, binary_to_poa(poa_to_binary(Proof2))),
 	Proof3 = Proof2#{ data_path => crypto:strong_rand_bytes(1024),
 			packing => spora_2_5, tx_path => crypto:strong_rand_bytes(1024) },
-	?assertEqual({ok, Proof3}, binary_to_poa(poa_to_binary(Proof3))).
+	?assertEqual({ok, Proof3}, binary_to_poa(poa_to_binary(Proof3))),
+	Proof4 = Proof3#{ packing => {spora_2_6, crypto:strong_rand_bytes(33)} },
+	?assertEqual({ok, Proof4}, binary_to_poa(poa_to_binary(Proof4))).
 
 block_index_to_binary_test() ->
 	lists:foreach(

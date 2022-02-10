@@ -10,11 +10,10 @@
 }).
 
 %% The polling frequency in seconds.
--ifdef(DEBUG).
--define(DEFAULT_POLLING_INTERVAL, 5).
--else.
--define(DEFAULT_POLLING_INTERVAL, 60).
--endif.
+-define(DEFAULT_POLLING_INTERVAL, 2).
+
+%% The number of processes periodically searching for the latest blocks.
+-define(DEFAULT_BLOCK_POLLERS, 10).
 
 %% The number of data sync jobs to run. Each job periodically picks a range
 %% and downloads it from peers.
@@ -28,7 +27,7 @@
 %% no longer pending or orphaned chunks, pack chunks with a sufficient number of confirmations,
 %% or remove the abandoned ones.
 -ifdef(DEBUG).
--define(DEFAULT_DISK_POOL_JOBS, 50).
+-define(DEFAULT_DISK_POOL_JOBS, 5).
 -else.
 -define(DEFAULT_DISK_POOL_JOBS, 100).
 -endif.
@@ -78,11 +77,7 @@
 -define(DEFAULT_POST_TX_TIMEOUT, 20).
 
 %% The maximum number of chunks per second the node attempts to pack or unpack.
--ifdef(DEBUG).
 -define(DEFAULT_PACKING_RATE, 50).
--else.
--define(DEFAULT_PACKING_RATE, 15).
--endif.
 
 %% @doc Startup options with default values.
 -record(config, {
@@ -94,9 +89,11 @@
 	data_dir = ".",
 	metrics_dir = ?METRICS_DIR,
 	polling = ?DEFAULT_POLLING_INTERVAL, % Polling frequency in seconds.
+	block_pollers = ?DEFAULT_BLOCK_POLLERS,
 	auto_join = true,
 	diff = ?DEFAULT_DIFF,
 	mining_addr = not_set,
+	mining_addr_2_6 = not_set,
 	max_miners = 0, % DEPRECATED.
 	io_threads = ?NUM_IO_MINING_THREADS,
 	stage_one_hashing_threads = ?NUM_STAGE_ONE_HASHING_PROCESSES,

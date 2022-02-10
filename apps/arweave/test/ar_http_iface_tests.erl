@@ -1,15 +1,17 @@
 -module(ar_http_iface_tests).
 
--include_lib("arweave/include/ar_mine.hrl").
+-include_lib("arweave/include/ar_consensus.hrl").
 -include_lib("arweave/include/ar_config.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
--import(ar_test_node, [start/1, slave_start/1, connect_to_slave/0, get_tx_anchor/0,
-		sign_tx/2, post_tx_json_to_master/1, assert_slave_wait_until_receives_txs/1,
-		slave_wait_until_height/1, read_block_when_stored/1, master_peer/0, slave_peer/0,
-		disconnect_from_slave/0, assert_post_tx_to_slave/1, assert_post_tx_to_master/1,
-		wait_until_height/1, assert_slave_wait_until_height/1, read_block_when_stored/2,
-		slave_call/3]).
+-import(ar_test_node, [start/1, slave_stop/0, slave_start/1, connect_to_slave/0,
+		get_tx_anchor/0, disconnect_from_slave/0, wait_until_height/1,
+		wait_until_receives_txs/1, sign_tx/2, post_tx_json_to_master/1,
+		assert_slave_wait_until_receives_txs/1, slave_wait_until_height/1,
+		read_block_when_stored/1, read_block_when_stored/2, master_peer/0, slave_peer/0,
+		slave_mine/0, assert_slave_wait_until_height/1, slave_call/3,
+		assert_post_tx_to_master/1, assert_post_tx_to_slave/1]).
+-import(ar_test_fork, [test_on_fork/3]).
 
 addresses_with_checksums_test_() ->
 	{timeout, 60, fun test_addresses_with_checksum/0}.
@@ -134,8 +136,8 @@ get_tx(ID) ->
 
 %% @doc Ensure that server info can be retreived via the HTTP interface.
 get_info_test() ->
-	ar_test_node:disconnect_from_slave(),
-	ar_test_node:start(no_block),
+	disconnect_from_slave(),
+	start(no_block),
 	?assertEqual(<<?NETWORK_NAME>>, ar_http_iface_client:get_info({127, 0, 0, 1, 1984}, name)),
 	?assertEqual({<<"release">>, ?RELEASE_NUMBER},
 			ar_http_iface_client:get_info({127, 0, 0, 1, 1984}, release)),
@@ -152,8 +154,8 @@ get_info_test() ->
 
 %% @doc Ensure that transactions are only accepted once.
 single_regossip_test() ->
-	ar_test_node:start(no_block),
-	ar_test_node:slave_start(no_block),
+	start(no_block),
+	slave_start(no_block),
 	TX = ar_tx:new(),
 	?assertMatch(
 		{ok, {{<<"200">>, _}, _, _, _, _}},
@@ -175,21 +177,6 @@ single_regossip_test() ->
 		ar_http_iface_client:send_tx_json({127, 0, 0, 1, 1983}, TX#tx.id,
 				ar_serialize:jsonify(ar_serialize:tx_to_json_struct(TX)))
 	).
-
-%% @doc Unjoined nodes should not accept blocks
-post_block_to_unjoined_node_test() ->
-	JB = ar_serialize:jsonify({[{foo, [<<"bing">>, 2.3, true]}]}),
-	{ok, {RespTup, _, Body, _, _}} =
-		ar_http:req(#{ method => post, peer => {127, 0, 0, 1, 1984}, path => "/block/",
-				body => JB }),
-	case ar_node:is_joined() of
-		false ->
-			?assertEqual({<<"503">>, <<"Service Unavailable">>}, RespTup),
-			?assertEqual(<<"Not joined.">>, Body);
-		true ->
-			?assertEqual({<<"400">>,<<"Bad Request">>}, RespTup),
-			?assertEqual(<<"Invalid block.">>, Body)
-	end.
 
 %% @doc Test that nodes sending too many requests are temporarily blocked: (a) GET.
 node_blacklisting_get_spammer_test() ->
@@ -236,7 +223,7 @@ get_fun_msg_pair(send_tx_binary) ->
 %% to an ar_util:pmap/2 call fails the tests currently.
 -spec node_blacklisting_test_frame(fun(), any(), non_neg_integer(), non_neg_integer()) -> ok.
 node_blacklisting_test_frame(RequestFun, ErrorResponse, NRequests, ExpectedErrors) ->
-	ar_test_node:disconnect_from_slave(),
+	slave_stop(),
 	ar_blacklist_middleware:reset(),
 	ar_rate_limiter:off(),
 	Responses = lists:map(RequestFun, lists:seq(1, NRequests)),
@@ -280,7 +267,7 @@ group(Grouper, [Item | List], Acc) ->
 get_balance_test() ->
 	{_Priv1, Pub1} = ar_wallet:new(),
 	[B0] = ar_weave:init([{ar_wallet:to_address(Pub1), 10000, <<>>}]),
-	{_Node, _} = ar_test_node:start(B0),
+	{_Node, _} = start(B0),
 	Addr = binary_to_list(ar_util:encode(ar_wallet:to_address(Pub1))),
 	{ok, {{<<"200">>, _}, _, Body, _, _}} =
 		ar_http:req(#{
@@ -297,7 +284,7 @@ get_balance_test() ->
 			path => "/wallet_list/" ++ RootHash ++ "/" ++ Addr ++ "/balance"
 		}),
 	ar_node:mine(),
-	ar_test_node:wait_until_height(1),
+	wait_until_height(1),
 	{ok, {{<<"200">>, _}, _, Body, _, _}} =
 		ar_http:req(#{
 			method => get,
@@ -308,7 +295,7 @@ get_balance_test() ->
 get_wallet_list_in_chunks_test() ->
 	{_Priv1, Pub1} = ar_wallet:new(),
 	[B0] = ar_weave:init([{Addr = ar_wallet:to_address(Pub1), 10000, <<>>}]),
-	{_Node, _} = ar_test_node:start(B0),
+	{_Node, _} = start(B0),
 	NonExistentRootHash = binary_to_list(ar_util:encode(crypto:strong_rand_bytes(32))),
 	{ok, {{<<"404">>, _}, _, <<"Root hash not found.">>, _, _}} =
 		ar_http:req(#{
@@ -330,17 +317,17 @@ get_wallet_list_in_chunks_test() ->
 %% @doc Test that heights are returned correctly.
 get_height_test() ->
 	[B0] = ar_weave:init([], ?DEFAULT_DIFF, ?AR(1)),
-	{_Node, _} = ar_test_node:start(B0),
+	{_Node, _} = start(B0),
 	0 = ar_http_iface_client:get_height({127, 0, 0, 1, 1984}),
 	ar_node:mine(),
-	ar_test_node:wait_until_height(1),
+	wait_until_height(1),
 	1 = ar_http_iface_client:get_height({127, 0, 0, 1, 1984}).
 
 %% @doc Test that last tx associated with a wallet can be fetched.
 get_last_tx_single_test() ->
 	{_Priv1, Pub1} = ar_wallet:new(),
 	[B0] = ar_weave:init([{ar_wallet:to_address(Pub1), 10000, <<"TEST_ID">>}]),
-	ar_test_node:start(B0),
+	start(B0),
 	Addr = binary_to_list(ar_util:encode(ar_wallet:to_address(Pub1))),
 	{ok, {{<<"200">>, _}, _, Body, _, _}} =
 		ar_http:req(#{
@@ -360,7 +347,7 @@ get_time_test() ->
 %% @doc Ensure that blocks can be received via a hash.
 get_block_by_hash_test() ->
 	[B0] = ar_weave:init([]),
-	ar_test_node:start(B0),
+	start(B0),
 	{_Peer, B1, _Time, _Size} = ar_http_iface_client:get_block_shadow([{127, 0, 0, 1, 1984}],
 			B0#block.indep_hash),
 	?assertEqual(B0#block{ hash_list = unset, size_tagged_txs = unset }, B1).
@@ -368,8 +355,8 @@ get_block_by_hash_test() ->
 %% @doc Ensure that blocks can be received via a height.
 get_block_by_height_test() ->
 	[B0] = ar_weave:init(),
-	{_Node, _} = ar_test_node:start(B0),
-	ar_test_node:wait_until_height(0),
+	{_Node, _} = start(B0),
+	wait_until_height(0),
 	{_Peer, B1, _Time, _Size} = ar_http_iface_client:get_block_shadow(
 			[{127, 0, 0, 1, 1984}], 0),
 	?assertEqual(
@@ -382,7 +369,7 @@ get_current_block_test_() ->
 
 test_get_current_block() ->
 	[B0] = ar_weave:init([]),
-	{_Node, _} = ar_test_node:start(B0),
+	{_Node, _} = start(B0),
 	ar_util:do_until(
 		fun() -> B0#block.indep_hash == ar_node:get_current_block_hash() end,
 		100,
@@ -403,7 +390,7 @@ test_get_current_block() ->
 %% correctly if the block cannot be found.
 get_non_existent_block_test() ->
 	[B0] = ar_weave:init([]),
-	ar_test_node:start(B0),
+	start(B0),
 	{ok, {{<<"404">>, _}, _, _, _, _}} =
 		ar_http:req(#{method => get, peer => {127, 0, 0, 1, 1984},
 				path => "/block/height/100"}),
@@ -444,7 +431,7 @@ get_non_existent_block_test() ->
 %% @doc A test for retrieving format=2 transactions from HTTP API.
 get_format_2_tx_test() ->
 	[B0] = ar_weave:init(),
-	{_Node, _} = ar_test_node:start(B0),
+	{_Node, _} = start(B0),
 	DataRoot = (ar_tx:generate_chunk_tree(#tx{ data = <<"DATA">> }))#tx.data_root,
 	ValidTX = #tx{ id = TXID } = (ar_tx:new(<<"DATA">>))#tx{ format = 2, data_root = DataRoot },
 	InvalidDataRootTX = #tx{ id = InvalidTXID } = (ar_tx:new(<<"DATA">>))#tx{ format = 2 },
@@ -466,9 +453,9 @@ get_format_2_tx_test() ->
 			ar_serialize:tx_to_binary(InvalidDataRootTX#tx{ data = <<>> })),
 	ar_http_iface_client:send_tx_binary({127, 0, 0, 1, 1984}, EmptyTX#tx.id,
 			ar_serialize:tx_to_binary(EmptyTX)),
-	ar_test_node:wait_until_receives_txs([ValidTX, EmptyTX, InvalidDataRootTX]),
+	wait_until_receives_txs([ValidTX, EmptyTX, InvalidDataRootTX]),
 	ar_node:mine(),
-	ar_test_node:wait_until_height(1),
+	wait_until_height(1),
 	%% Ensure format=2 transactions can be retrieved over the HTTP
 	%% interface with no populated data, while retaining info on all other fields.
 	{ok, {{<<"200">>, _}, _, Body, _, _}} =
@@ -510,14 +497,14 @@ get_format_2_tx_test() ->
 
 get_format_1_tx_test() ->
 	[B0] = ar_weave:init(),
-	{_Node, _} = ar_test_node:start(B0),
+	{_Node, _} = start(B0),
 	TX = #tx{ id = TXID } = ar_tx:new(<<"DATA">>),
 	EncodedTXID = binary_to_list(ar_util:encode(TXID)),
 	ar_http_iface_client:send_tx_binary({127, 0, 0, 1, 1984}, TX#tx.id,
 			ar_serialize:tx_to_binary(TX)),
-	ar_test_node:wait_until_receives_txs([TX]),
+	wait_until_receives_txs([TX]),
 	ar_node:mine(),
-	ar_test_node:wait_until_height(1),
+	wait_until_height(1),
 	{ok, Body} =
 		ar_util:do_until(
 			fun() ->
@@ -540,7 +527,7 @@ get_format_1_tx_test() ->
 %% @doc Test adding transactions to a block.
 add_external_tx_with_tags_test() ->
 	[B0] = ar_weave:init([]),
-	{_Node, _} = ar_test_node:start(B0),
+	{_Node, _} = start(B0),
 	TX = ar_tx:new(<<"DATA">>),
 	TaggedTX =
 		TX#tx {
@@ -552,11 +539,11 @@ add_external_tx_with_tags_test() ->
 		},
 	ar_http_iface_client:send_tx_json({127, 0, 0, 1, 1984}, TaggedTX#tx.id,
 			ar_serialize:jsonify(ar_serialize:tx_to_json_struct(TaggedTX))),
-	ar_test_node:wait_until_receives_txs([TaggedTX]),
+	wait_until_receives_txs([TaggedTX]),
 	ar_node:mine(),
-	ar_test_node:wait_until_height(1),
+	wait_until_height(1),
 	[B1Hash | _] = ar_node:get_blocks(),
-	B1 = ar_test_node:read_block_when_stored(B1Hash),
+	B1 = read_block_when_stored(B1Hash),
 	TXID = TaggedTX#tx.id,
 	?assertEqual([TXID], B1#block.txs),
 	?assertEqual(TaggedTX, ar_storage:read_tx(hd(B1#block.txs))).
@@ -564,13 +551,13 @@ add_external_tx_with_tags_test() ->
 %% @doc Test getting transactions
 find_external_tx_test() ->
 	[B0] = ar_weave:init(),
-	{_Node, _} = ar_test_node:start(B0),
+	{_Node, _} = start(B0),
 	TX = ar_tx:new(<<"DATA">>),
 	ar_http_iface_client:send_tx_binary({127, 0, 0, 1, 1984}, TX#tx.id,
 			ar_serialize:tx_to_binary(TX)),
-	ar_test_node:wait_until_receives_txs([TX]),
+	wait_until_receives_txs([TX]),
 	ar_node:mine(),
-	ar_test_node:wait_until_height(1),
+	wait_until_height(1),
 	{ok, FoundTXID} =
 		ar_util:do_until(
 			fun() ->
@@ -591,23 +578,31 @@ add_block_with_invalid_hash_test_() ->
 
 test_add_block_with_invalid_hash() ->
 	[B0] = ar_weave:init([], ar_retarget:switch_to_linear_diff(10)),
-	ar_test_node:start(B0),
-	{_Slave, _} = ar_test_node:slave_start(B0),
-	ar_test_node:slave_mine(),
-	BI = ar_test_node:assert_slave_wait_until_height(1),
+	start(B0),
+	{_Slave, _} = slave_start(B0),
+	slave_mine(),
+	BI = assert_slave_wait_until_height(1),
 	Peer = {127, 0, 0, 1, 1984},
 	B1Shadow =
-		(ar_test_node:slave_call(ar_storage, read_block, [hd(BI)]))#block{
+		(slave_call(ar_storage, read_block, [hd(BI)]))#block{
 			hash_list = [B0#block.indep_hash]
 		},
 	%% Try to post an invalid block. This triggers a ban in ar_blacklist_middleware.
+	InvalidH = crypto:strong_rand_bytes(48),
 	?assertMatch(
-		{ok, {{<<"400">>, _}, _, <<"Invalid Block Hash">>, _, _}},
-		send_new_block(
-			Peer,
-			B1Shadow#block{ indep_hash = crypto:strong_rand_bytes(48), nonce = <<>> }
-		)
-	),
+		{ok, {{<<"200">>, _}, _, _, _, _}},
+		send_new_block(Peer, B1Shadow#block{ indep_hash = InvalidH, nonce = <<>> })),
+	ok = ar_events:subscribe(block),
+	receive
+		{event, block, {rejected, invalid_hash, InvalidH, Peer}} ->
+			ok
+		after 500 ->
+			?assert(false, "Did not receive the rejected block event (invalid_hash).")
+	end,
+	%% Verify the IP address of self is NOT banned in ar_blacklist_middleware.
+	?assertMatch({ok, {{<<"200">>, _}, _, _, _, _}}, send_new_block(
+			Peer, B1Shadow#block{ indep_hash = crypto:strong_rand_bytes(48) })),
+	ar_blacklist_middleware:reset(),
 	%% The valid block with the ID from the failed attempt can still go through.
 	?assertMatch(
 		{ok, {{<<"200">>, _}, _, _, _, _}},
@@ -615,18 +610,22 @@ test_add_block_with_invalid_hash() ->
 	),
 	%% Try to post the same block again.
 	?assertMatch(
-		{ok, {{<<"208">>, _}, _, <<"Block already processed.">>, _, _}},
+		{ok, {{<<"200">>, _}, _, <<>>, _, _}},
 		send_new_block(Peer, B1Shadow)
 	),
 	%% Correct hash, but invalid PoW.
 	B2Shadow = B1Shadow#block{ reward_addr = crypto:strong_rand_bytes(32) },
+	InvalidH2 = ar_block:indep_hash(B2Shadow),
 	?assertMatch(
-		{ok, {{<<"400">>, _}, _, <<"Invalid Block Proof of Work">>, _, _}},
-		send_new_block(
-			Peer,
-			B2Shadow#block{ indep_hash = ar_weave:indep_hash(B2Shadow) }
-		)
-	),
+		{ok, {{<<"200">>, _}, _, _, _, _}},
+		send_new_block(Peer, B2Shadow#block{ indep_hash = InvalidH2 })),
+	receive
+		{event, block, {rejected, invalid_pow, InvalidH2, Peer}} ->
+			ok
+		after 500 ->
+			?assert(false, "Did not receive the rejected block event "
+					"(invalid_pow).")
+	end,
 	?assertMatch(
 		{ok, {{<<"403">>, _}, _, <<"IP address blocked due to previous request.">>, _, _}},
 		send_new_block(
@@ -636,26 +635,36 @@ test_add_block_with_invalid_hash() ->
 	),
 	ar_blacklist_middleware:reset().
 
-add_external_block_with_invalid_timestamp_test() ->
+add_external_block_with_invalid_timestamp_pre_fork_2_6_test_() ->
+	test_on_fork(height_2_6, infinity,
+			fun test_add_external_block_with_invalid_timestamp_pre_fork_2_6/0).
+
+test_add_external_block_with_invalid_timestamp_pre_fork_2_6() ->
 	ar_blacklist_middleware:reset(),
 	[B0] = ar_weave:init([]),
-	ar_test_node:start(B0),
-	{_Slave, _} = ar_test_node:slave_start(B0),
-	ar_test_node:slave_mine(),
-	BI = ar_test_node:assert_slave_wait_until_height(1),
+	start(B0),
+	{_Slave, _} = slave_start(B0),
+	slave_mine(),
+	BI = assert_slave_wait_until_height(1),
 	Peer = {127, 0, 0, 1, 1984},
 	B1Shadow =
-		(ar_test_node:slave_call(ar_storage, read_block, [hd(BI)]))#block{
+		(slave_call(ar_storage, read_block, [hd(BI)]))#block{
 			hash_list = [B0#block.indep_hash]
 		},
 	%% Expect the timestamp too far from the future to be rejected.
 	FutureTimestampTolerance = ?JOIN_CLOCK_TOLERANCE * 2 + ?CLOCK_DRIFT_MAX,
 	TooFarFutureTimestamp = os:system_time(second) + FutureTimestampTolerance + 3,
 	B2Shadow = update_block_timestamp(B1Shadow, TooFarFutureTimestamp),
-	?assertMatch(
-		{ok, {{<<"400">>, _}, _, <<"Invalid timestamp.">>, _, _}},
-		send_new_block(Peer, B2Shadow)
-	),
+	?assertMatch({ok, {{<<"200">>, _}, _, _, _, _}}, send_new_block(Peer, B2Shadow)),
+	ok = ar_events:subscribe(block),
+	H = B2Shadow#block.indep_hash,
+	receive
+		{event, block, {rejected, out_of_sync_timestamp, H, Peer}} ->
+			ok
+		after 500 ->
+			?assert(false, "Did not receive the rejected block event "
+					"(out_of_sync_timestamp).")
+	end,
 	%% Expect the timestamp from the future within the tolerance interval to be accepted.
 	OkFutureTimestamp = os:system_time(second) + FutureTimestampTolerance - 3,
 	B3Shadow = update_block_timestamp(B1Shadow, OkFutureTimestamp),
@@ -672,13 +681,92 @@ add_external_block_with_invalid_timestamp_test() ->
 	]),
 	TooFarPastTimestamp = os:system_time(second) - PastTimestampTolerance - 3,
 	B4Shadow = update_block_timestamp(B1Shadow, TooFarPastTimestamp),
-	?assertMatch(
-		{ok, {{<<"400">>, _}, _, <<"Invalid timestamp.">>, _, _}},
-		send_new_block(Peer, B4Shadow)
-	),
+	?assertMatch({ok, {{<<"200">>, _}, _, _, _, _}}, send_new_block(Peer, B4Shadow)),
+	H2 = B4Shadow#block.indep_hash,
+	receive
+		{event, block, {rejected, out_of_sync_timestamp, H2, Peer}} ->
+			ok
+		after 500 ->
+			?assert(false, "Did not receive the rejected block event "
+					"(out_of_sync_timestamp).")
+	end,
 	%% Expect the block with a timestamp from the past within the tolerance interval
 	%% to be accepted.
 	OkPastTimestamp = os:system_time(second) - PastTimestampTolerance + 3,
+	B5Shadow = update_block_timestamp(B1Shadow, OkPastTimestamp),
+	?assertMatch(
+		{ok, {{<<"200">>, _}, _, _, _, _}},
+		send_new_block(Peer, B5Shadow)
+	),
+	%% Wait a little bit, before the height_2_6 mock is removed.
+	%% Otherwise, the node may crash trying to validate the new block
+	%% with the previous block not having a packing_2_6_threshold field.
+	timer:sleep(1000).
+
+add_external_block_with_invalid_timestamp_test_() ->
+	{timeout, 20, fun test_add_external_block_with_invalid_timestamp/0}.
+
+test_add_external_block_with_invalid_timestamp() ->
+	ar_blacklist_middleware:reset(),
+	[B0] = ar_weave:init([]),
+	start(B0),
+	{_Slave, _} = slave_start(B0),
+	slave_mine(),
+	BI = assert_slave_wait_until_height(1),
+	Peer = {127, 0, 0, 1, 1984},
+	B1Shadow =
+		(slave_call(ar_storage, read_block, [hd(BI)]))#block{
+			hash_list = [B0#block.indep_hash]
+		},
+	%% Expect the timestamp too far from the future to be rejected.
+	FutureTimestampTolerance = ?JOIN_CLOCK_TOLERANCE * 2 + ?CLOCK_DRIFT_MAX,
+	TooFarFutureTimestamp = os:system_time(second) + FutureTimestampTolerance + 3,
+	B2Shadow = update_block_timestamp(B1Shadow, TooFarFutureTimestamp),
+	?assertMatch({ok, {{<<"200">>, _}, _, _, _, _}}, send_new_block(Peer, B2Shadow)),
+	ok = ar_events:subscribe(block),
+	H = B2Shadow#block.indep_hash,
+	receive
+		{event, block, {rejected, out_of_sync_timestamp, H, Peer}} ->
+			ok
+		after 500 ->
+			?assert(false, "Did not receive the rejected block event "
+					"(out_of_sync_timestamp).")
+	end,
+	%% Expect the timestamp from the future within the tolerance interval to be accepted.
+	OkFutureTimestamp = os:system_time(second) + FutureTimestampTolerance - 3,
+	B3Shadow = update_block_timestamp(B1Shadow, OkFutureTimestamp),
+	?assertMatch(
+		{ok, {{<<"200">>, _}, _, _, _, _}},
+		send_new_block(Peer, B3Shadow)
+	),
+	%% Expect the timestamp too far behind the previous timestamp to be rejected,
+	%% the peer banned.
+	PastTimestampTolerance = lists:sum([
+		?JOIN_CLOCK_TOLERANCE * 2,
+		?CLOCK_DRIFT_MAX,
+		?MINING_TIMESTAMP_REFRESH_INTERVAL,
+		?MAX_BLOCK_PROPAGATION_TIME
+	]),
+	TooFarPastTimestamp = os:system_time(second) - PastTimestampTolerance - 1,
+	B4Shadow = update_block_timestamp(B1Shadow, TooFarPastTimestamp),
+	?assertMatch({ok, {{<<"200">>, _}, _, _, _, _}}, send_new_block(Peer, B4Shadow)),
+	H2 = B4Shadow#block.indep_hash,
+	receive
+		{event, block, {rejected, invalid_timestamp, H2, Peer}} ->
+			ok
+		after 500 ->
+			?assert(false, "Did not receive the rejected block event "
+					"(invalid_timestamp).")
+	end,
+	%% Verify the IP address of self is banned in ar_blacklist_middleware.
+	?assertMatch(
+		{ok, {{<<"403">>, _}, _,
+				<<"IP address blocked due to previous request.">>, _, _}},
+		send_new_block(Peer, B4Shadow)),
+	%% Expect the block with a timestamp from the past within the tolerance interval
+	%% to be accepted.
+	ar_blacklist_middleware:reset(),
+	OkPastTimestamp = os:system_time(second) - PastTimestampTolerance + 1,
 	B5Shadow = update_block_timestamp(B1Shadow, OkPastTimestamp),
 	?assertMatch(
 		{ok, {{<<"200">>, _}, _, _, _, _}},
@@ -695,23 +783,24 @@ update_block_timestamp(B, Timestamp) ->
 	B2 = B#block{ timestamp = Timestamp },
 	BDS = ar_block:generate_block_data_segment(B2),
 	{H0, _Entropy} = ar_mine:spora_h0_with_entropy(BDS, Nonce, Height),
-	B3 = B2#block{ hash = ar_mine:spora_solution_hash(PrevH, Timestamp, H0, Chunk, Height) },
-	B3#block{ indep_hash = ar_weave:indep_hash(B3) }.
+	B3 = B2#block{ hash = element(1, ar_mine:spora_solution_hash(PrevH, Timestamp, H0, Chunk,
+			Height)) },
+	B3#block{ indep_hash = ar_block:indep_hash(B3) }.
 
 %% @doc Post a tx to the network and ensure that last_tx call returns the ID of last tx.
 add_tx_and_get_last_test() ->
 	{Priv1, Pub1} = ar_wallet:new(),
 	[B0] = ar_weave:init([{ar_wallet:to_address(Pub1), ?AR(10000), <<>>}]),
-	{_Node, _} = ar_test_node:start(B0),
+	{_Node, _} = start(B0),
 	{_Priv2, Pub2} = ar_wallet:new(),
 	TX = ar_tx:new(ar_wallet:to_address(Pub2), ?AR(1), ?AR(9000), <<>>),
 	SignedTX = ar_tx:sign_v1(TX, Priv1, Pub1),
 	ID = SignedTX#tx.id,
 	ar_http_iface_client:send_tx_binary({127, 0, 0, 1, 1984}, SignedTX#tx.id,
 			ar_serialize:tx_to_binary(SignedTX)),
-	ar_test_node:wait_until_receives_txs([SignedTX]),
+	wait_until_receives_txs([SignedTX]),
 	ar_node:mine(),
-	ar_test_node:wait_until_height(1),
+	wait_until_height(1),
 	{ok, {{<<"200">>, _}, _, Body, _, _}} =
 		ar_http:req(#{
 			method => get,
@@ -725,13 +814,13 @@ add_tx_and_get_last_test() ->
 %% @doc Post a tx to the network and ensure that its subfields can be gathered
 get_subfields_of_tx_test() ->
 	[B0] = ar_weave:init(),
-	{_Node, _} = ar_test_node:start(B0),
+	{_Node, _} = start(B0),
 	TX = ar_tx:new(<<"DATA">>),
 	ar_http_iface_client:send_tx_binary({127, 0, 0, 1, 1984}, TX#tx.id,
 			ar_serialize:tx_to_binary(TX)),
-	ar_test_node:wait_until_receives_txs([TX]),
+	wait_until_receives_txs([TX]),
 	ar_node:mine(),
-	ar_test_node:wait_until_height(1),
+	wait_until_height(1),
 	{ok, Body} = wait_until_syncs_tx_data(TX#tx.id),
 	Orig = TX#tx.data,
 	?assertEqual(Orig, ar_util:decode(Body)).
@@ -739,11 +828,11 @@ get_subfields_of_tx_test() ->
 %% @doc Correctly check the status of pending is returned for a pending transaction
 get_pending_tx_test() ->
 	[B0] = ar_weave:init(),
-	{_Node, _} = ar_test_node:start(B0),
+	{_Node, _} = start(B0),
 	TX = ar_tx:new(<<"DATA1">>),
 	ar_http_iface_client:send_tx_json({127, 0, 0, 1, 1984}, TX#tx.id,
 			ar_serialize:jsonify(ar_serialize:tx_to_json_struct(TX))),
-	ar_test_node:wait_until_receives_txs([TX]),
+	wait_until_receives_txs([TX]),
 	{ok, {{<<"202">>, _}, _, Body, _, _}} =
 		ar_http:req(#{
 			method => get,
@@ -755,13 +844,11 @@ get_pending_tx_test() ->
 %% @doc Mine a transaction into a block and retrieve it's binary body via HTTP.
 get_tx_body_test() ->
 	[B0] = ar_weave:init(random_wallets()),
-	{_Node, _} = ar_test_node:start(B0),
+	{_Node, _} = start(B0),
 	TX = ar_tx:new(<<"TEST DATA">>),
-	% Add tx to network
-	ar_node:add_tx(TX),
-	ar_test_node:wait_until_receives_txs([TX]),
+	assert_post_tx_to_master(TX),
 	ar_node:mine(),
-	ar_test_node:wait_until_height(1),
+	wait_until_height(1),
 	{ok, Data} = wait_until_syncs_tx_data(TX#tx.id),
 	?assertEqual(<<"TEST DATA">>, ar_util:decode(Data)).
 
@@ -779,15 +866,13 @@ get_txs_by_send_recv_test_() ->
 		TX2 = ar_tx:new(Pub3, ?AR(1), ?AR(500), <<>>),
 		SignedTX2 = ar_tx:sign_v1(TX2, Priv2, Pub2),
 		[B0] = ar_weave:init([{ar_wallet:to_address(Pub1), ?AR(10000), <<>>}]),
-		{_Node, _} = ar_test_node:start(B0),
-		ar_node:add_tx(SignedTX),
-		ar_test_node:wait_until_receives_txs([SignedTX]),
+		{_Node, _} = start(B0),
+		assert_post_tx_to_master(SignedTX),
 		ar_node:mine(),
-		ar_test_node:wait_until_height(1),
-		ar_node:add_tx(SignedTX2),
-		ar_test_node:wait_until_receives_txs([SignedTX2]),
+		wait_until_height(1),
+		assert_post_tx_to_master(SignedTX2),
 		ar_node:mine(),
-		ar_test_node:wait_until_height(2),
+		wait_until_height(2),
 		QueryJSON = ar_serialize:jsonify(
 			ar_serialize:query_to_json_struct(
 					{'or',
@@ -831,10 +916,9 @@ get_tx_status_test_() ->
 
 test_get_tx_status() ->
 	[B0] = ar_weave:init([]),
-	{_Node, _} = ar_test_node:start(B0),
+	{_Node, _} = start(B0),
 	TX = (ar_tx:new())#tx{ tags = [{<<"TestName">>, <<"TestVal">>}] },
-	ar_node:add_tx(TX),
-	ar_test_node:wait_until_receives_txs([TX]),
+	assert_post_tx_to_master(TX),
 	FetchStatus = fun() ->
 		ar_http:req(#{
 			method => get,
@@ -844,7 +928,7 @@ test_get_tx_status() ->
 	end,
 	?assertMatch({ok, {{<<"202">>, _}, _, <<"Pending">>, _, _}}, FetchStatus()),
 	ar_node:mine(),
-	ar_test_node:wait_until_height(1),
+	wait_until_height(1),
 	{ok, {{<<"200">>, _}, _, Body, _, _}} = FetchStatus(),
 	{Res} = ar_serialize:dejsonify(Body),
 	BI = ar_node:get_block_index(),
@@ -857,7 +941,7 @@ test_get_tx_status() ->
 		maps:from_list(Res)
 	),
 	ar_node:mine(),
-	ar_test_node:wait_until_height(2),
+	wait_until_height(2),
 	ar_util:do_until(
 		fun() ->
 			{ok, {{<<"200">>, _}, _, Body2, _, _}} = FetchStatus(),
@@ -872,14 +956,14 @@ test_get_tx_status() ->
 		5000
 	),
 	%% Create a fork which returns the TX to mempool.
-	{_Slave, _} = ar_test_node:slave_start(B0),
-	ar_test_node:connect_to_slave(),
-	ar_test_node:slave_mine(),
-	ar_test_node:assert_slave_wait_until_height(1),
-	ar_test_node:slave_mine(),
-	ar_test_node:assert_slave_wait_until_height(2),
-	ar_test_node:slave_mine(),
-	ar_test_node:wait_until_height(3),
+	{_Slave, _} = slave_start(B0),
+	connect_to_slave(),
+	slave_mine(),
+	assert_slave_wait_until_height(1),
+	slave_mine(),
+	assert_slave_wait_until_height(2),
+	slave_mine(),
+	wait_until_height(3),
 	?assertMatch({ok, {{<<"202">>, _}, _, _, _, _}}, FetchStatus()).
 
 post_unsigned_tx_test_() ->
@@ -888,7 +972,7 @@ post_unsigned_tx_test_() ->
 post_unsigned_tx() ->
 	{_, Pub} = Wallet = ar_wallet:new(),
 	[B0] = ar_weave:init([{ar_wallet:to_address(Pub), ?AR(5000), <<>>}]),
-	{_Node, _} = ar_test_node:start(B0),
+	{_Node, _} = start(B0),
 	%% Generate a wallet and receive a wallet access code.
 	{ok, {{<<"421">>, _}, _, _, _, _}} =
 		ar_http:req(#{
@@ -931,9 +1015,9 @@ post_unsigned_tx() ->
 			path => "/tx",
 			body => ar_serialize:jsonify(ar_serialize:tx_to_json_struct(TopUpTX))
 		}),
-	ar_test_node:wait_until_receives_txs([TopUpTX]),
+	wait_until_receives_txs([TopUpTX]),
 	ar_node:mine(),
-	ar_test_node:wait_until_height(1),
+	wait_until_height(1),
 	%% Send an unsigned transaction to be signed with the generated key.
 	TX = (ar_tx:new())#tx{reward = ?AR(1)},
 	UnsignedTXProps = [
@@ -974,7 +1058,7 @@ post_unsigned_tx() ->
 	TXID = proplists:get_value(<<"id">>, Res),
 	timer:sleep(200),
 	ar_node:mine(),
-	ar_test_node:wait_until_height(2),
+	wait_until_height(2),
 	{ok, {_, _, GetTXBody, _, _}} =
 		ar_http:req(#{
 			method => get,
@@ -994,7 +1078,7 @@ get_wallet_txs_test_() ->
 		{_, Pub = { _, Owner}} = ar_wallet:new(),
 		WalletAddress = binary_to_list(ar_util:encode(ar_wallet:to_address(Pub))),
 		[B0] = ar_weave:init([{ar_wallet:to_address(Pub), 10000, <<>>}]),
-		{_Node, _} = ar_test_node:start(B0),
+		{_Node, _} = start(B0),
 		{ok, {{<<"200">>, <<"OK">>}, _, Body, _, _}} =
 			ar_http:req(#{
 				method => get,
@@ -1013,11 +1097,11 @@ get_wallet_txs_test_() ->
 				path => "/tx",
 				body => ar_serialize:jsonify(ar_serialize:tx_to_json_struct(TX))
 			}),
-		ar_test_node:wait_until_receives_txs([TX]),
+		wait_until_receives_txs([TX]),
 		ar_node:mine(),
-		[{H, _, _} | _] = ar_test_node:wait_until_height(1),
+		[{H, _, _} | _] = wait_until_height(1),
 		%% Wait until the storage is updated before querying for wallet's transactions.
-		ar_test_node:read_block_when_stored(H),
+		read_block_when_stored(H),
 		{ok, {{<<"200">>, <<"OK">>}, _, GetOneTXBody, _, _}} =
 			ar_http:req(#{
 				method => get,
@@ -1044,9 +1128,9 @@ get_wallet_txs_test_() ->
 				path => "/tx",
 				body => ar_serialize:jsonify(ar_serialize:tx_to_json_struct(SecondTX))
 			}),
-		ar_test_node:wait_until_receives_txs([SecondTX]),
+		wait_until_receives_txs([SecondTX]),
 		ar_node:mine(),
-		ar_test_node:wait_until_height(2),
+		wait_until_height(2),
 		{ok, {{<<"200">>, <<"OK">>}, _, GetTwoTXsBody, _, _}} =
 			ar_http:req(#{
 				method => get,
@@ -1077,7 +1161,7 @@ get_wallet_deposits_test_() ->
 			{ar_wallet:to_address(PubTo), 0, <<>>},
 			{ar_wallet:to_address(PubFrom), 200, <<>>}
 		]),
-		{_Node, _} = ar_test_node:start(B0),
+		{_Node, _} = start(B0),
 		GetTXs = fun(EarliestDeposit) ->
 			BasePath = "/wallet/" ++ WalletAddressTo ++ "/deposits",
 			Path = 	BasePath ++ "/" ++ EarliestDeposit,
@@ -1107,9 +1191,9 @@ get_wallet_deposits_test_() ->
 				})
 		end,
 		PostTX(FirstTX),
-		ar_test_node:wait_until_receives_txs([FirstTX]),
+		wait_until_receives_txs([FirstTX]),
 		ar_node:mine(),
-		ar_test_node:wait_until_height(1),
+		wait_until_height(1),
 		%% Expect the endpoint to report the received transfer
 		?assertEqual([ar_util:encode(FirstTX#tx.id)], GetTXs("")),
 		%% Send some more Winston to WalletAddressTo
@@ -1120,9 +1204,9 @@ get_wallet_deposits_test_() ->
 			quantity = 100
 		},
 		PostTX(SecondTX),
-		ar_test_node:wait_until_receives_txs([SecondTX]),
+		wait_until_receives_txs([SecondTX]),
 		ar_node:mine(),
-		ar_test_node:wait_until_height(2),
+		wait_until_height(2),
 		%% Expect the endpoint to report the received transfer
 		?assertEqual(
 			[ar_util:encode(SecondTX#tx.id), ar_util:encode(FirstTX#tx.id)],
@@ -1144,14 +1228,14 @@ get_wallet_deposits_test_() ->
 %% limit is exceeded.
 get_error_of_data_limit_test() ->
 	[B0] = ar_weave:init(),
-	{_Node, _} = ar_test_node:start(B0),
+	{_Node, _} = start(B0),
 	Limit = 1460,
 	TX = ar_tx:new(<< <<0>> || _ <- lists:seq(1, Limit * 2) >>),
 	ar_http_iface_client:send_tx_binary({127, 0, 0, 1, 1984}, TX#tx.id,
 			ar_serialize:tx_to_binary(TX)),
-	ar_test_node:wait_until_receives_txs([TX]),
+	wait_until_receives_txs([TX]),
 	ar_node:mine(),
-	ar_test_node:wait_until_height(1),
+	wait_until_height(1),
 	{ok, _} = wait_until_syncs_tx_data(TX#tx.id),
 	Resp =
 		ar_http:req(#{

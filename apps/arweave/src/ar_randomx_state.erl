@@ -306,15 +306,25 @@ get_block(Height, BI, Peers) when is_integer(Height) ->
 	get_block(BH, Peers).
 
 get_block(BH, Peers) ->
+	get_block2(BH, Peers, 5).
+
+get_block2(_BH, _Peers, 0) ->
+	unavailable;
+get_block2(BH, Peers, RetryCount) ->
 	case ar_storage:read_block(BH) of
 		B when is_record(B, block) ->
 			{ok, B};
 		unavailable ->
 			case ar_http_iface_client:get_block_shadow(Peers, BH) of
 				unavailable ->
-					unavailable;
+					?LOG_WARNING([{event, failed_to_get_randomx_key_block},
+							{block, ar_util:encode(BH)},
+							{peers, string:join([ar_util:format_peer(Peer) || Peer <- Peers],
+									", ")}]),
+					timer:sleep(2000),
+					get_block2(BH, Peers, RetryCount - 1);
 				{Peer, B, Time, Size} ->
-					case ar_weave:indep_hash(B) of
+					case ar_block:indep_hash(B) of
 						BH ->
 							ar_events:send(peer, {served_block, Peer, Time, Size}),
 							{ok, B};

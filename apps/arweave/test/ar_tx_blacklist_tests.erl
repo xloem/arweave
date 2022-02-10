@@ -7,8 +7,8 @@
 -include_lib("arweave/include/ar.hrl").
 -include_lib("arweave/include/ar_config.hrl").
 
--import(ar_test_node, [slave_start/1, start/3, connect_to_slave/0, get_tx_anchor/1,
-		sign_tx/2, sign_v1_tx/2, random_v1_data/1, slave_call/3, assert_post_tx_to_slave/1,
+-import(ar_test_node, [slave_start/1, start/4, connect_to_slave/0, get_tx_anchor/1, sign_tx/2,
+		sign_v1_tx/2, random_v1_data/1, slave_call/3, assert_post_tx_to_slave/1,
 		assert_post_tx_to_master/1, slave_mine/0, wait_until_height/1,
 		assert_slave_wait_until_height/1, get_chunk/1, get_chunk/2, post_chunk/1, post_chunk/2,
 		disconnect_from_slave/0, assert_wait_until_receives_txs/1]).
@@ -51,8 +51,10 @@ test_uses_blacklists() ->
 	} = setup(),
 	WhitelistFile = random_filename(),
 	ok = file:write_file(WhitelistFile, <<>>),
+	RewardAddr = ar_wallet:to_address(ar_wallet:new_ecdsa()),
 	{_, _} =
-		start(B0, unclaimed, (element(2, application:get_env(arweave, config)))#config{
+		start(B0, unclaimed, RewardAddr,
+				(element(2, application:get_env(arweave, config)))#config{
 			transaction_blacklist_files = BlacklistFiles,
 			transaction_whitelist_files = [WhitelistFile],
 			transaction_blacklist_urls = [
@@ -119,7 +121,6 @@ test_uses_blacklists() ->
 	assert_present_offsets([[WeaveSize]]),
 	ok = file:write_file(lists:nth(3, BlacklistFiles), ar_util:encode(TX#tx.id)),
 	assert_removed_offsets([[WeaveSize]]),
-	connect_to_slave(),
 	TX2 = sign_v1_tx(Wallet, #{ data => random_v1_data(2 * ?DATA_CHUNK_SIZE),
 			last_tx => get_tx_anchor(slave) }),
 	assert_post_tx_to_slave(TX2),
@@ -129,6 +130,7 @@ test_uses_blacklists() ->
 	assert_post_tx_to_slave(TX),
 	slave_mine(),
 	assert_slave_wait_until_height(length(TXs) + 2),
+	connect_to_slave(),
 	[{_, WeaveSize2, _} | _] = wait_until_height(length(TXs) + 2),
 	assert_removed_offsets([[WeaveSize2]]),
 	assert_present_offsets([[WeaveSize]]),

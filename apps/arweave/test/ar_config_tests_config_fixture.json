@@ -16,9 +16,11 @@
   "data_dir": "some_data_dir",
   "metrics_dir": "metrics_dir",
   "polling": 10,
+  "block_pollers": 100,
   "no_auto_join": true,
   "diff": 42,
   "mining_addr": "LKC84RnISouGUw4uMQGCpPS9yDC-tIoqM2UVbUIt-Sw",
+  "mining_addr_2_6": "MCygvOEZyEqLhlMOLjEBgqT0vcgwvrSKKjNlFW1CLfks",
   "max_miners": 43,
   "io_threads": 43,
   "stage_one_hashing_threads": 27,
@@ -32,7 +34,6 @@
   "header_sync_jobs": 1,
   "disk_pool_jobs": 2,
   "requests_per_minute_limit": 2500,
-  "load_mining_key": "some_key_file",
   "transaction_blacklists": [
     "some_blacklist_1",
     "some_blacklist_2"

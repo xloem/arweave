@@ -11,7 +11,7 @@
 		wallet_list_filepath/1, tx_filepath/1, tx_data_filepath/1, read_tx_file/1,
 		read_migrated_v1_tx_file/1, ensure_directories/1, write_file_atomic/2,
 		write_term/2, write_term/3, read_term/1, read_term/2, delete_term/1, is_file/1,
-		migrate_tx_record/1, migrate_tx_records/1]).
+		migrate_tx_record/1, migrate_tx_records/1, migrate_block_record/1]).
 
 -export([init/1, handle_cast/2, handle_call/3, handle_info/2, terminate/2]).
 
@@ -135,7 +135,7 @@ read_block(BH) ->
 									read_block_from_file(Filename)
 							end;
 						{ok, V} ->
-							binary_to_term(V);
+							migrate_block_record(binary_to_term(V));
 						{error, Reason} ->
 							?LOG_WARNING([{event, error_reading_block_from_kv_storage},
 									{block, ar_util:encode(BH)},
@@ -278,6 +278,25 @@ migrate_tx_record({tx, Format, ID, LastTX, Owner, Tags, Target, Quantity, Data,
 			data = Data, data_size = DataSize, data_root = DataRoot,
 			signature = Signature, signature_type = ?DEFAULT_KEY_TYPE,
 			reward = Reward, data_tree = DataTree }.
+
+%% @doc Convert the stored block record to its latest state in the code
+%% (assign the default values to all missing fields).
+migrate_block_record(#block{} = B) ->
+	B;
+migrate_block_record({block, Nonce, PrevH, TS, Last, Diff, Height, Hash, H,
+		TXs, TXRoot, TXTree, HL, HLMerkle, WL, RewardAddr, Tags, RewardPool,
+		WeaveSize, BlockSize, CDiff, SizeTaggedTXs, PoA, Rate, ScheduledRate,
+		Packing_2_5_Threshold, StrictDataSplitThreshold}) ->
+	#block{ nonce = Nonce, previous_block = PrevH, timestamp = TS,
+			last_retarget = Last, diff = Diff, height = Height, hash = Hash,
+			indep_hash = H, txs = TXs, tx_root = TXRoot, tx_tree = TXTree,
+			hash_list = HL, hash_list_merkle = HLMerkle, wallet_list = WL,
+			reward_addr = RewardAddr, tags = Tags, reward_pool = RewardPool,
+			weave_size = WeaveSize, block_size = BlockSize, cumulative_diff = CDiff,
+			size_tagged_txs = SizeTaggedTXs, poa = PoA, usd_to_ar_rate = Rate,
+			scheduled_usd_to_ar_rate = ScheduledRate,
+			packing_2_5_threshold = Packing_2_5_Threshold,
+			strict_data_split_threshold = StrictDataSplitThreshold }.
 
 %% @doc Convert the stored tx records to its latest state in the code
 %% (assign the default values to all missing fields).
@@ -1029,7 +1048,7 @@ store_and_retrieve_block_test_() ->
 	{timeout, 20, fun test_store_and_retrieve_block/0}.
 
 test_store_and_retrieve_block() ->
-	BI0 = [B0] = ar_weave:init([]),
+	[B0] = ar_weave:init([]),
 	ar_test_node:start(B0),
 	?assertEqual(
 		B0#block{
@@ -1038,7 +1057,8 @@ test_store_and_retrieve_block() ->
 		}, read_block(B0#block.indep_hash)),
 	?assertEqual(
 		B0#block{ hash_list = unset, size_tagged_txs = unset },
-		read_block(B0#block.height, ar_weave:generate_block_index(BI0))
+		read_block(B0#block.height, [{B0#block.indep_hash, B0#block.weave_size,
+				B0#block.tx_root}])
 	),
 	ar_node:mine(),
 	ar_test_node:wait_until_height(1),

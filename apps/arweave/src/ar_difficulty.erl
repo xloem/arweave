@@ -3,7 +3,7 @@
 -export([next_cumulative_diff/3, multiply_diff_pre_fork_2_5/2]).
 
 -include_lib("arweave/include/ar.hrl").
--include_lib("arweave/include/ar_mine.hrl").
+-include_lib("arweave/include/ar_consensus.hrl").
 
 %%%===================================================================
 %%% Public interface.

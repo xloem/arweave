@@ -441,9 +441,9 @@ download_block(Peers, H, H2, TXRoot) ->
 			BH =
 				case Height >= Fork_2_0 of
 					true ->
-						ar_weave:indep_hash(B);
+						ar_block:indep_hash(B);
 					false ->
-						ar_weave:indep_hash(
+						ar_block:indep_hash(
 							B#block{ tx_root = TXRoot, txs = lists:sort(B#block.txs) }
 						)
 				end,

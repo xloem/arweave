@@ -3,8 +3,8 @@
 
 -behaviour(gen_server).
 
--export([start_link/0, put/2, open_files/0, get/1, has_chunk/1, close_files/0, cut/1, delete/1,
-		repair_chunk/2]).
+-export([start_link/0, put/2, open_files/0, get/1, has_chunk/1, close_file/1, close_files/0,
+		cut/1, delete/1, repair_chunk/2]).
 
 -export([init/1, handle_cast/2, handle_call/3, handle_info/2, terminate/2]).
 
@@ -75,6 +75,15 @@ get(Byte) ->
 has_chunk(Byte) ->
 	ar_sync_record:is_recorded(Byte + 1, ?MODULE).
 
+%% @doc Close the file with the given Key.
+close_file(Key) ->
+	case erlang:erase({cfile, Key}) of
+		undefined ->
+			ok;
+		F ->
+			file:close(F)
+	end.
+
 %% @doc Close the files opened by open_files/1.
 close_files() ->
 	close_files(erlang:get_keys()).
@@ -110,18 +119,7 @@ init([]) ->
 		end,
 		FileIndex
 	),
-	{ok, _} =
-		timer:apply_interval(
-			?STORE_CHUNK_STORAGE_STATE_FREQUENCY_MS,
-			gen_server,
-			cast,
-			[?MODULE, store_state]
-		),
 	{ok, #state{ file_index = FileIndex }}.
-
-handle_cast(store_state, State) ->
-	store_state(State),
-	{noreply, State};
 
 handle_cast({cut, Offset}, State) ->
 	ok = ar_sync_record:cut(Offset, ?MODULE),
@@ -569,7 +567,8 @@ test_cross_file_not_aligned() ->
 	ar_chunk_storage:delete(100 * ?CHUNK_GROUP_SIZE + 1),
 	ar_chunk_storage:put(2 * ?CHUNK_GROUP_SIZE - ?DATA_CHUNK_SIZE div 2, C1),
 	assert_get(C1, 2 * ?CHUNK_GROUP_SIZE - ?DATA_CHUNK_SIZE div 2),
-	?assertEqual(not_found, ar_chunk_storage:get(2 * ?CHUNK_GROUP_SIZE - ?DATA_CHUNK_SIZE div 2)).
+	?assertEqual(not_found,
+			ar_chunk_storage:get(2 * ?CHUNK_GROUP_SIZE - ?DATA_CHUNK_SIZE div 2)).
 
 clear() ->
 	ok = gen_server:call(?MODULE, reset).

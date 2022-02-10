@@ -1,8 +1,6 @@
 -module(ar_weave).
 
--export([init/0, init/1, init/2, init/3, init/4,
-		indep_hash/1, indep_hash/3, indep_hash/4, create_genesis_txs/0,
-		read_v1_genesis_txs/0, generate_block_index/1, tx_id/1]).
+-export([init/0, init/1, init/2, init/3, init/4, create_genesis_txs/0, read_v1_genesis_txs/0]).
 
 -include_lib("arweave/include/ar.hrl").
 -include_lib("arweave/include/ar_config.hrl").
@@ -10,13 +8,28 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
-%% @doc Create a genesis block.
-init() -> init(ar_util:genesis_wallets()).
-init(WalletList) -> init(WalletList, 1).
-init(WalletList, Diff) -> init(WalletList, Diff, 0).
+%%%===================================================================
+%%% Public interface.
+%%%===================================================================
+
+%% @doc Create a genesis block with the mainnet genesis accounts.
+init() ->
+	init(ar_util:genesis_wallets()).
+
+%% @doc Create a genesis block with the given accounts and difficulty=1.
+init(WalletList) ->
+	init(WalletList, 1).
+
+%% @doc Create a genesis block with the given accounts, difficulty and reward_pool=0.
+init(WalletList, Diff) ->
+	init(WalletList, Diff, 0).
+
+%% @doc Create a genesis block with the given accounts, difficulty, and reward pool.
 init(WalletList, StartingDiff, RewardPool) ->
 	init(WalletList, StartingDiff, RewardPool, []).
 
+%% @doc Create a genesis block with the given accounts, difficulty, reward pool,
+%% and transactions.
 init(WalletList, StartingDiff, RewardPool, TXs) ->
 	WL = ar_patricia_tree:from_proplist([{A, {B, LTX}} || {A, B, LTX} <- WalletList]),
 	WLH = element(1, ar_block:hash_wallet_list(0, unclaimed, WL)),
@@ -25,6 +38,13 @@ init(WalletList, StartingDiff, RewardPool, TXs) ->
 	BlockSize = case SizeTaggedTXs of [] -> 0; _ -> element(2, lists:last(SizeTaggedTXs)) end,
 	SizeTaggedDataRoots = [{Root, Offset} || {{_, Root}, Offset} <- SizeTaggedTXs],
 	{TXRoot, _Tree} = ar_merkle:generate_tree(SizeTaggedDataRoots),
+	RewardAddr =
+		case ar_fork:height_2_6() > 0 of
+			true ->
+				unclaimed;
+			false ->
+				ar_wallet:to_address(ar_wallet:new_keyfile({ecdsa, secp256k1}))
+		end,
 	B0 =
 		#block{
 			height = 0,
@@ -32,6 +52,7 @@ init(WalletList, StartingDiff, RewardPool, TXs) ->
 			nonce = <<>>,
 			previous_block = <<>>,
 			hash_list_merkle = <<>>,
+			reward_addr = RewardAddr,
 			txs = TXs,
 			tx_root = TXRoot,
 			wallet_list = WLH,
@@ -55,48 +76,13 @@ init(WalletList, StartingDiff, RewardPool, TXs) ->
 					usd_to_ar_rate = ?NEW_WEAVE_USD_TO_AR_RATE,
 					scheduled_usd_to_ar_rate = ?NEW_WEAVE_USD_TO_AR_RATE,
 					packing_2_5_threshold = 0,
+					packing_2_6_threshold = 0,
 					strict_data_split_threshold = 0
 				}
 		end,
 	B2 = B1#block { last_retarget = B1#block.timestamp },
-	B3 = B2#block { indep_hash = indep_hash(B2) },
+	B3 = B2#block { indep_hash = ar_block:indep_hash(B2) },
 	[B3].
-
-%% @doc Take a complete block list and return a list of block hashes.
-%% Throws an error if the block list is not complete.
-%% @end
-generate_block_index(undefined) -> [];
-generate_block_index([]) -> [];
-generate_block_index(Blocks) ->
-	lists:map(
-		fun
-			(B) when ?IS_BLOCK(B) ->
-				ar_util:block_index_entry_from_block(B);
-			({H, WS, TXRoot}) ->
-				{H, WS, TXRoot}
-		end,
-		Blocks
-	).
-
-%% @doc Compute the block identifier (also referred to as "independent hash").
-indep_hash(B) ->
-	BDS = ar_block:generate_block_data_segment(B),
-	case B#block.height >= ar_fork:height_2_4() of
-		true ->
-			indep_hash(BDS, B#block.hash, B#block.nonce, B#block.poa);
-		false ->
-			indep_hash(BDS, B#block.hash, B#block.nonce)
-	end.
-
-indep_hash(BDS, Hash, Nonce, POA) ->
-	ar_deep_hash:hash([BDS, Hash, Nonce, ar_block:poa_to_list(POA)]).
-
-indep_hash(BDS, Hash, Nonce) ->
-	ar_deep_hash:hash([BDS, Hash, Nonce]).
-
-%% @doc Returns the transaction id
-tx_id(Id) when is_binary(Id) -> Id;
-tx_id(TX) -> TX#tx.id.
 
 read_v1_genesis_txs() ->
 	{ok, Files} = file:list_dir("data/genesis_txs"),
@@ -113,6 +99,7 @@ read_v1_genesis_txs() ->
 		Files
 	).
 
+%% @doc Return the mainnet genesis transactions.
 create_genesis_txs() ->
 	TXs = lists:map(
 		fun({M}) ->

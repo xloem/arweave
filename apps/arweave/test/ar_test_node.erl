@@ -1,8 +1,9 @@
 -module(ar_test_node).
 
--export([start/1, start/2, start/3, slave_start/1, slave_start/2, wait_until_joined/0,
+-export([start/1, start/2, start/3, start/4, slave_start/1, slave_start/2, slave_start/3,
+		wait_until_joined/0, stop/0, slave_stop/0,
 		connect_to_slave/0, disconnect_from_slave/0, slave_call/3, slave_call/4,
-		slave_add_tx/1, slave_mine/0, wait_until_height/1, slave_wait_until_height/1,
+		slave_mine/0, wait_until_height/1, slave_wait_until_height/1,
 		assert_slave_wait_until_height/1, wait_until_block_block_index/1,
 		assert_wait_until_block_block_index/1, wait_until_receives_txs/1,
 		assert_wait_until_receives_txs/1, assert_slave_wait_until_receives_txs/1,
@@ -23,26 +24,39 @@
 -include_lib("arweave/include/ar_config.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
+-define(WAIT_UNTIL_BLOCK_HEIGHT_TIMEOUT, 30000).
+-define(WAIT_UNTIL_RECEIVES_TXS_TIMEOUT, 30000).
+
 slave_start(MaybeB) ->
-	Slave = slave_call(?MODULE, start, [MaybeB]),
+	Slave = slave_call(?MODULE, start, [MaybeB], 20000),
 	slave_wait_until_joined(),
 	Slave.
 
 slave_start(B0, RewardAddr) ->
-	Slave = slave_call(?MODULE, start, [B0, RewardAddr]),
+	Slave = slave_call(?MODULE, start, [B0, RewardAddr], 20000),
+	slave_wait_until_joined(),
+	Slave.
+
+slave_start(B0, RewardAddr, RewardAddr_2_6) ->
+	Slave = slave_call(?MODULE, start, [B0, RewardAddr, RewardAddr_2_6], 20000),
 	slave_wait_until_joined(),
 	Slave.
 
 start(no_block) ->
 	[B0] = ar_weave:init([]),
-	start(B0, unclaimed, element(2, application:get_env(arweave, config)));
+	start(B0, unclaimed, ar_wallet:to_address(ar_wallet:new_ecdsa()),
+			element(2, application:get_env(arweave, config)));
 start(B0) ->
-	start(B0, unclaimed, element(2, application:get_env(arweave, config))).
+	start(B0, unclaimed, ar_wallet:to_address(ar_wallet:new_ecdsa()),
+			element(2, application:get_env(arweave, config))).
 
 start(B0, RewardAddr) ->
-	start(B0, RewardAddr, element(2, application:get_env(arweave, config))).
+	start(B0, unclaimed, RewardAddr).
 
-start(B0, RewardAddr, Config) ->
+start(B0, RewardAddr, RewardAddr_2_6) ->
+	start(B0, RewardAddr, RewardAddr_2_6, element(2, application:get_env(arweave, config))).
+
+start(B0, RewardAddr, RewardAddr_2_6, Config) ->
 	%% Currently, ar_weave:init stores the wallet tree on disk. Tests call ar_weave:init,
 	%% it returns the block header (which does not contain the wallet tree), the block header
 	%% is passed here where we want to erase the previous storage and at the same time
@@ -54,6 +68,7 @@ start(B0, RewardAddr, Config) ->
 		start_from_block_index = true,
 		peers = [],
 		mining_addr = RewardAddr,
+		mining_addr_2_6 = RewardAddr_2_6,
 		disk_space_check_frequency = 1000,
 		header_sync_jobs = 4,
 		enable = [search_in_rocksdb_when_mining, serve_arql, serve_wallet_txs,
@@ -65,7 +80,7 @@ start(B0, RewardAddr, Config) ->
 	{whereis(ar_node_worker), B0}.
 
 read_wallet_list(RootHash) ->
-	case ar_rpc:call(master, ar_storage, read_wallet_list, [RootHash], 10000) of
+	case rpc:call('master@127.0.0.1', ar_storage, read_wallet_list, [RootHash], 10000) of
 		{ok, Tree} ->
 			Tree;
 		_ ->
@@ -77,9 +92,20 @@ read_wallet_list(RootHash) ->
 
 stop() ->
 	{ok, Config} = application:get_env(arweave, config),
-	ok = application:stop(arweave),
+	application:stop(arweave),
 	ok = ar:stop_dependencies(),
-	os:cmd("rm -r " ++ Config#config.data_dir ++ "/*").
+	{ok, Entries} = file:list_dir_all(Config#config.data_dir),
+	lists:foreach(
+		fun	("wallets") ->
+				ok;
+			(Entry) ->
+				file:del_dir_r(filename:join(Config#config.data_dir, Entry))
+		end,
+		Entries
+	).
+
+slave_stop() ->
+	slave_call(ar_test_node, stop, []).
 
 write_genesis_files(DataDir, B0, WalletList) ->
 	BH = B0#block.indep_hash,
@@ -124,6 +150,7 @@ join(Peer) ->
 	stop(),
 	ok = application:set_env(arweave, config, Config#config{
 		start_from_block_index = false,
+		mining_addr_2_6 = not_set,
 		peers = [Peer]
 	}),
 	{ok, _} = application:ensure_all_started(arweave, permanent),
@@ -173,13 +200,31 @@ disconnect_from_slave() ->
 	slave_call(ar_peers, block_connections, []).
 
 slave_call(Module, Function, Args) ->
-	slave_call(Module, Function, Args, 60000).
+	slave_call(Module, Function, Args, 5000).
 
 slave_call(Module, Function, Args, Timeout) ->
-	ar_rpc:call(slave, Module, Function, Args, Timeout).
-
-slave_add_tx(TX) ->
-	slave_call(ar_node, add_tx, [TX]).
+	Key = rpc:async_call('slave@127.0.0.1', Module, Function, Args),
+	Result = ar_util:do_until(
+		fun() ->
+			case rpc:nb_yield(Key) of
+				timeout ->
+					false;
+				{value, Reply} ->
+					{ok, Reply}
+			end
+		end,
+		200,
+		Timeout
+	),
+	case Result of
+		{error, timeout} ->
+			?debugFmt("Timed out waiting for the rpc reply; module: ~p, function: ~p, "
+					"args: ~p.~n", [Module, Function, Args]);
+		_ ->
+			ok
+	end,
+	?assertMatch({ok, _}, Result),
+	element(2, Result).
 
 slave_mine() ->
 	slave_call(ar_node, mine, []).
@@ -209,16 +254,18 @@ wait_until_height(TargetHeight) ->
 			end
 		end,
 		100,
-		60 * 1000
+		?WAIT_UNTIL_BLOCK_HEIGHT_TIMEOUT
 	),
 	BI.
 
 slave_wait_until_height(TargetHeight) ->
-	slave_call(?MODULE, wait_until_height, [TargetHeight]).
+	slave_call(?MODULE, wait_until_height, [TargetHeight],
+			?WAIT_UNTIL_BLOCK_HEIGHT_TIMEOUT + 500).
 
 assert_slave_wait_until_height(TargetHeight) ->
-	BI = slave_call(?MODULE, wait_until_height, [TargetHeight]),
-	?assert(is_list(BI)),
+	BI = slave_call(?MODULE, wait_until_height, [TargetHeight],
+			?WAIT_UNTIL_BLOCK_HEIGHT_TIMEOUT + 500),
+	?assert(is_list(BI), iolist_to_binary(io_lib:format("Got ~p.", [BI]))),
 	BI.
 
 assert_wait_until_block_block_index(BI) ->
@@ -253,11 +300,12 @@ wait_until_receives_txs(TXs) ->
 			end
 		end,
 		100,
-		60 * 1000
+		?WAIT_UNTIL_RECEIVES_TXS_TIMEOUT
 	).
 
 assert_slave_wait_until_receives_txs(TXs) ->
-	?assertEqual(ok, slave_call(?MODULE, wait_until_receives_txs, [TXs])).
+	?assertEqual(ok, slave_call(?MODULE, wait_until_receives_txs, [TXs],
+			?WAIT_UNTIL_RECEIVES_TXS_TIMEOUT + 500)).
 
 assert_post_tx_to_slave(TX) ->
 	{ok, {{<<"200">>, _}, _, <<"OK">>, _, _}} = post_tx_to_slave(TX).
@@ -513,9 +561,7 @@ test_with_mocked_functions(Functions, TestFun) ->
 				Mocked
 			)
 		end,
-		[
-			{timeout, 120, TestFun}
-		]
+		[{timeout, 900, TestFun}]
 	}.
 
 get_tx_price(DataSize) ->
@@ -569,7 +615,7 @@ post_and_mine(#{ miner := Miner, await_on := AwaitOn }, TXs) ->
 			read_block_when_stored(H, true);
 		{slave, _AwaitNode} ->
 			[{H, _, _} | _] = slave_wait_until_height(CurrentHeight + 1),
-			slave_call(ar_test_node, read_block_when_stored, [H, true])
+			slave_call(ar_test_node, read_block_when_stored, [H, true], 20000)
 	end.
 
 read_block_when_stored(H) ->
@@ -598,7 +644,7 @@ read_block_when_stored(H, IncludeTXs) ->
 							end
 						end,
 						200,
-						10000
+						30000
 					)
 			end
 		end,

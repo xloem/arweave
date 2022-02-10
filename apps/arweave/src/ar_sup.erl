@@ -58,6 +58,7 @@ init([]) ->
 	ets:new(tx_prefixes, [bag, public, named_table]),
 	ets:new(block_index, [ordered_set, public, named_table]),
 	ets:new(node_state, [set, public, named_table]),
+	ets:new(chunk_storage_lock, [set, public, named_table, {read_concurrency, true}]),
 	ets:new(ar_chunk_storage, [ordered_set, public, named_table, {read_concurrency, true}]),
 	ets:new(chunk_storage_file_index, [set, public, named_table, {read_concurrency, true}]),
 	ets:new(mining_state, [set, public, named_table, {read_concurrency, true}]),
@@ -79,7 +80,8 @@ init([]) ->
 		?CHILD(ar_header_sync, worker),
 		?CHILD(ar_data_sync, worker),
 		?CHILD(ar_tx_emitter_sup, supervisor),
+		?CHILD(ar_block_pre_validator_sup, supervisor),
 		?CHILD(ar_node_sup, supervisor),
 		?CHILD(ar_webhook_sup, supervisor),
-		?CHILD(ar_poller, worker)
+		?CHILD(ar_poller_sup, supervisor)
 	]}}.

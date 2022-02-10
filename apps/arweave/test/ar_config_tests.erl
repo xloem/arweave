@@ -8,6 +8,7 @@ parse_test_() ->
 
 parse_config() ->
 	ExpectedMiningAddr = ar_util:decode(<<"LKC84RnISouGUw4uMQGCpPS9yDC-tIoqM2UVbUIt-Sw">>),
+	ExpectedMiningAddr_2_6 = ar_util:decode(<<"MCygvOEZyEqLhlMOLjEBgqT0vcgwvrSKKjNlFW1CLfks">>),
 	{ok, ParsedConfig} = ar_config:parse(config_fixture()),
 	?assertMatch(#config{
 		init = true,
@@ -27,9 +28,11 @@ parse_config() ->
 		data_dir = "some_data_dir",
 		metrics_dir = "metrics_dir",
 		polling = 10,
+		block_pollers = 100,
 		auto_join = false,
 		diff = 42,
 		mining_addr = ExpectedMiningAddr,
+		mining_addr_2_6 = ExpectedMiningAddr_2_6,
 		max_miners = 43,
 		io_threads = 43,
 		stage_one_hashing_threads = 27,
@@ -44,7 +47,6 @@ parse_config() ->
 		header_sync_jobs = 1,
 		disk_pool_jobs = 2,
 		requests_per_minute_limit = 2500,
-		load_key = "some_key_file",
 		disk_space = 44 * 1024 * 1024 * 1024,
 		disk_space_check_frequency = 10 * 1000,
 		start_from_block_index = true,

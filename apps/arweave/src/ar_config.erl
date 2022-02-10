@@ -85,6 +85,11 @@ parse_options([{<<"polling">>, Frequency} | Rest], Config) when is_integer(Frequ
 parse_options([{<<"polling">>, Opt} | _], _) ->
 	{error, {bad_type, polling, number}, Opt};
 
+parse_options([{<<"block_pollers">>, N} | Rest], Config) when is_integer(N) ->
+	parse_options(Rest, Config#config{ block_pollers = N });
+parse_options([{<<"block_pollers">>, Opt} | _], _) ->
+	{error, {bad_type, block_pollers, number}, Opt};
+
 parse_options([{<<"no_auto_join">>, true} | Rest], Config) ->
 	parse_options(Rest, Config#config{ auto_join = false });
 parse_options([{<<"no_auto_join">>, false} | Rest], Config) ->
@@ -100,12 +105,31 @@ parse_options([{<<"diff">>, Diff} | _], _) ->
 parse_options([{<<"mining_addr">>, <<"unclaimed">>} | Rest], Config) ->
 	parse_options(Rest, Config#config{ mining_addr = unclaimed });
 parse_options([{<<"mining_addr">>, Addr} | Rest], Config) when is_binary(Addr) ->
-	case ar_util:safe_decode(Addr) of
-		{ok, D} -> parse_options(Rest, Config#config{ mining_addr = D });
-		{error, _} -> {error, bad_mining_addr, Addr}
+	case Config#config.mining_addr of
+		not_set ->
+			case ar_util:safe_decode(Addr) of
+				{ok, D} when byte_size(D) == 32 ->
+					parse_options(Rest, Config#config{ mining_addr = D });
+				_ -> {error, bad_mining_addr, Addr}
+			end;
+		_ ->
+			{error, at_most_one_mining_addr_is_supported, Addr}
 	end;
 parse_options([{<<"mining_addr">>, Addr} | _], _) ->
 	{error, {bad_type, mining_addr, string}, Addr};
+parse_options([{<<"mining_addr_2_6">>, Addr} | Rest], Config) when is_binary(Addr) ->
+	case Config#config.mining_addr_2_6 of
+		not_set ->
+			case ar_util:safe_decode(Addr) of
+				{ok, D} when byte_size(D) == 33 ->
+					parse_options(Rest, Config#config{ mining_addr_2_6 = D });
+				_ -> {error, bad_mining_addr_2_6, Addr}
+			end;
+		_ ->
+			{error, at_most_one_mining_addr_2_6_is_supported, Addr}
+	end;
+parse_options([{<<"mining_addr_2_6">>, Addr} | _], _) ->
+	{error, {bad_type, mining_addr_2_6, string}, Addr};
 
 parse_options([{<<"max_miners">>, MaxMiners} | Rest], Config) when is_integer(MaxMiners) ->
 	parse_options(Rest, Config#config{ max_miners = MaxMiners });
@@ -186,11 +210,6 @@ parse_options([{<<"requests_per_minute_limit">>, L} | Rest], Config) when is_int
 	parse_options(Rest, Config#config{ requests_per_minute_limit = L });
 parse_options([{<<"requests_per_minute_limit">>, L} | _], _) ->
 	{error, {bad_type, requests_per_minute_limit, number}, L};
-
-parse_options([{<<"load_mining_key">>, DataDir} | Rest], Config) when is_binary(DataDir) ->
-	parse_options(Rest, Config#config{ load_key = binary_to_list(DataDir) });
-parse_options([{<<"load_mining_key">>, DataDir} | _], _) ->
-	{error, {bad_type, load_mining_key, string}, DataDir};
 
 parse_options([{<<"transaction_blacklists">>, TransactionBlacklists} | Rest], Config)
 		when is_list(TransactionBlacklists) ->

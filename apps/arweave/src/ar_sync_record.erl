@@ -603,7 +603,14 @@ store_state(State) ->
 			prometheus_gauge:set(v2_index_data_size, ar_intervals:sum(SyncRecord)),
 			maps:map(
 				fun	({ar_data_sync, Type}, TypeRecord) ->
-						prometheus_gauge:set(v2_index_data_size_by_packing, [Type],
+						Type2 =
+							case Type of
+								{spora_2_6, _Addr} ->
+									spora_2_6;
+								_ ->
+									Type
+							end,
+						prometheus_gauge:set(v2_index_data_size_by_packing, [Type2],
 								ar_intervals:sum(TypeRecord));
 					(_, _) ->
 						ok

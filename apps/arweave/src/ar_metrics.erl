@@ -230,6 +230,10 @@ register(MetricsDir) ->
 	prometheus_counter:new([
 		{name, validating_unpacked_spora},
 		{help, "The number of SPoRA solutions based on unpacked chunks entered validation."}
+	]),
+	prometheus_counter:new([
+		{name, validating_packed_2_6_spora},
+		{help, "The number of SPoRA solutions based on chunks packed for 2.6 entered validation."}
 	]).
 
 %% @doc Store the given metric in a file.

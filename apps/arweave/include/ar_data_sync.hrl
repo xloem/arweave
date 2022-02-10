@@ -208,5 +208,9 @@
 	%% disk pool jobs to avoid double-processing.
 	currently_processed_disk_pool_keys = sets:new(),
 	%% A flag used to temporarily pause all disk pool jobs.
-	disk_pool_scan_pause = false
+	disk_pool_scan_pause = false,
+	%% Chunks above the threshold are packed with a mining address-specific packing key.
+	packing_2_6_threshold,
+	%% The mining address the chunks after packing_2_6_threshold are packed with.
+	mining_address
 }).

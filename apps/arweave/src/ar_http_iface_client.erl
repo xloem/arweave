@@ -12,7 +12,7 @@
 		add_peer/1, get_info/1, get_info/2,
 		get_peers/1, get_time/2, get_height/1, get_block_index/1, get_block_index/2,
 		get_sync_record/1, get_sync_record/3, get_chunk_json/3, get_chunk_binary/3,
-		get_mempool/1, get_sync_buckets/1]).
+		get_mempool/1, get_sync_buckets/1, get_recent_hash_list/1]).
 
 -include_lib("arweave/include/ar.hrl").
 -include_lib("arweave/include/ar_config.hrl").
@@ -73,6 +73,8 @@ send_block_binary(Peer, H, Payload) ->
 
 send_block_binary(Peer, H, Payload, RecallByte) ->
 	Headers = [{<<"arweave-block-hash">>, ar_util:encode(H)} | p2p_headers()],
+	%% The way of informing the recipient about the recall byte used before the fork
+	%% 2.6. Since the fork 2.6 blocks have a "recall_byte" field.
 	Headers2 = case RecallByte of undefined -> Headers; _ ->
 			[{<<"arweave-recall-byte">>, integer_to_binary(RecallByte)} | Headers] end,
 	ar_http:req(#{
@@ -309,7 +311,18 @@ get_chunk_binary(Peer, Offset, RequestedPacking) ->
 	get_chunk(Peer, Offset, RequestedPacking, binary).
 
 get_chunk(Peer, Offset, RequestedPacking, Encoding) ->
-	Headers = [{<<"x-packing">>, atom_to_binary(RequestedPacking)},
+	PackingBinary =
+		case RequestedPacking of
+			any ->
+				<<"any">>;
+			unpacked ->
+				<<"unpacked">>;
+			spora_2_5 ->
+				<<"spora_2_5">>;
+			{spora_2_6, Addr} ->
+				iolist_to_binary([<<"spora_2_6_">>, ar_util:encode(Addr)])
+		end,
+	Headers = [{<<"x-packing">>, PackingBinary},
 			%% The nodes not upgraded to the 2.5 version would ignore this header.
 			%% It is fine because all offsets before 2.5 are not bucket-based.
 			%% Client libraries do not send this header - normally they do not need
@@ -358,6 +371,17 @@ get_sync_buckets(Peer) ->
 		timeout => 10 * 1000,
 		connect_timeout => 2000,
 		limit => ?MAX_SYNC_BUCKETS_SIZE,
+		headers => p2p_headers()
+	})).
+
+get_recent_hash_list(Peer) ->
+	handle_get_recent_hash_list_response(ar_http:req(#{
+		peer => Peer,
+		method => get,
+		path => "/recent_hash_list",
+		timeout => 2 * 1000,
+		connect_timeout => 1000,
+		limit => 3400,
 		headers => p2p_headers()
 	})).
 
@@ -477,6 +501,34 @@ handle_get_sync_buckets_response({ok, {{<<"400">>, _}, _,
 	{error, request_type_not_found};
 handle_get_sync_buckets_response(Response) ->
 	{error, Response}.
+
+handle_get_recent_hash_list_response({ok, {{<<"200">>, _}, _, Body, _, _}}) ->
+	case ar_serialize:json_decode(Body) of
+		{ok, HL} when is_list(HL) ->
+			decode_hash_list(HL);
+		{ok, _} ->
+			{error, invalid_hash_list};
+		Error ->
+			Error
+	end;
+handle_get_recent_hash_list_response({ok, {{<<"400">>, _}, _,
+		<<"Request type not found.">>, _, _}}) ->
+	{error, request_type_not_found};
+handle_get_recent_hash_list_response(Response) ->
+	{error, Response}.
+
+decode_hash_list(HL) ->
+	decode_hash_list(HL, []).
+
+decode_hash_list([H | HL], DecodedHL) ->
+	case ar_util:safe_decode(H) of
+		{ok, DecodedH} ->
+			decode_hash_list(HL, [DecodedH | DecodedHL]);
+		Error ->
+			Error
+	end;
+decode_hash_list([], DecodedHL) ->
+	{ok, lists:reverse(DecodedHL)}.
 
 %% @doc Return the current height of a remote node.
 get_height(Peer) ->

@@ -8,8 +8,8 @@
 	release_state/1,
 	bulk_hash_fast/13,
 	hash_fast_verify/3,
-	randomx_encrypt_chunk/3,
-	randomx_decrypt_chunk/4,
+	randomx_encrypt_chunk/3, randomx_encrypt_chunk_2_6/3,
+	randomx_decrypt_chunk/4, randomx_decrypt_chunk_2_6/4,
 	hash_fast_long_with_entropy/2,
 	hash_light_long_with_entropy/2,
 	bulk_hash_fast_long_with_entropy/13
@@ -29,11 +29,13 @@
 ]).
 
 -include_lib("arweave/include/ar.hrl").
--include_lib("arweave/include/ar_mine.hrl").
+-include_lib("arweave/include/ar_consensus.hrl").
 -include_lib("arweave/include/ar_config.hrl").
 
 -define(RANDOMX_WITH_ENTROPY_ROUNDS, 8).
 -define(RANDOMX_PACKING_ROUNDS, 8 * (?PACKING_DIFFICULTY)).
+
+-define(RANDOMX_PACKING_ROUNDS_2_6, 8 * (?PACKING_DIFFICULTY_2_6)).
 
 -ifdef(DEBUG).
 init_fast(Key, _Threads) ->
@@ -131,6 +133,30 @@ randomx_encrypt_chunk(RandomxState, Key, Chunk) ->
 randomx_decrypt_chunk(RandomxState, Key, Chunk, Size) ->
 	{ok, OutChunk} =
 		randomx_decrypt_chunk_nif(RandomxState, Key, Chunk, Size, ?RANDOMX_PACKING_ROUNDS,
+				jit(), large_pages(), hardware_aes()),
+	OutChunk.
+-endif.
+
+-ifdef(DEBUG).
+randomx_encrypt_chunk_2_6(_State, Key, Chunk) ->
+	Options = [{encrypt, true}, {padding, zero}],
+	IV = binary:part(Key, {0, 16}),
+	crypto:crypto_one_time(aes_256_cbc, Key, IV, Chunk, Options).
+
+randomx_decrypt_chunk_2_6(_State, Key, Chunk, _Size) ->
+	Options = [{encrypt, false}],
+	IV = binary:part(Key, {0, 16}),
+	crypto:crypto_one_time(aes_256_cbc, Key, IV, Chunk, Options).
+-else.
+randomx_encrypt_chunk_2_6(RandomxState, Key, Chunk) ->
+	{ok, OutChunk} =
+		randomx_encrypt_chunk_nif(RandomxState, Key, Chunk, ?RANDOMX_PACKING_ROUNDS_2_6, jit(),
+				large_pages(), hardware_aes()),
+	OutChunk.
+
+randomx_decrypt_chunk_2_6(RandomxState, Key, Chunk, Size) ->
+	{ok, OutChunk} =
+		randomx_decrypt_chunk_nif(RandomxState, Key, Chunk, Size, ?RANDOMX_PACKING_ROUNDS_2_6,
 				jit(), large_pages(), hardware_aes()),
 	OutChunk.
 -endif.

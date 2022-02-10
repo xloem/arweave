@@ -9,8 +9,8 @@
 	wait_until_height/1, assert_slave_wait_until_height/1,
 	slave_call/3, assert_wait_until_block_block_index/1, post_tx_to_slave/1,
 	post_tx_to_slave/2, post_tx_to_master/1, assert_post_tx_to_slave/1,
-	assert_post_tx_to_master/1, sign_tx/2, sign_tx/3, sign_v1_tx/1, sign_v1_tx/2, sign_v1_tx/3,
-	get_tx_anchor/0, get_tx_anchor/1, get_tx_confirmations/2,
+	assert_post_tx_to_master/1, sign_tx/2, sign_tx/3, sign_v1_tx/1, sign_v1_tx/2,
+	sign_v1_tx/3, get_tx_anchor/0, get_tx_anchor/1, get_tx_confirmations/2,
 	disconnect_from_slave/0, read_block_when_stored/1, random_v1_data/1, slave_peer/0]).
 
 accepts_gossips_and_mines_test_() ->
@@ -720,11 +720,11 @@ joins_network_successfully() ->
 	assert_post_tx_to_master(TX2),
 	ar_node:mine(),
 	wait_until_height(?MAX_TX_ANCHOR_DEPTH + 1),
-	connect_to_slave(),
 	TX3 = sign_tx(Key, #{ last_tx => element(1, lists:nth(?MAX_TX_ANCHOR_DEPTH, BI)) }),
 	assert_post_tx_to_slave(TX3),
 	slave_mine(),
 	BI2 = assert_slave_wait_until_height(?MAX_TX_ANCHOR_DEPTH + 1),
+	connect_to_slave(),
 	TX4 = sign_tx(Key, #{ last_tx => element(1, lists:nth(?MAX_TX_ANCHOR_DEPTH, BI2)) }),
 	assert_post_tx_to_slave(TX4),
 	assert_wait_until_receives_txs([TX4]),
@@ -772,7 +772,8 @@ recovers_from_forks(ForkHeight) ->
 	),
 	PostTXToMaster =
 		fun() ->
-			UnsignedTX = #{ last_tx => get_tx_anchor(master), tags => [{<<"nonce">>, random_nonce()}] },
+			UnsignedTX = #{ last_tx => get_tx_anchor(master),
+					tags => [{<<"nonce">>, random_nonce()}] },
 			TX = case rand:uniform(2) of
 				1 ->
 					sign_tx(master, Key, UnsignedTX);
@@ -784,7 +785,8 @@ recovers_from_forks(ForkHeight) ->
 		end,
 	PostTXToSlave =
 		fun() ->
-			UnsignedTX = #{ last_tx => get_tx_anchor(), tags => [{<<"nonce">>, random_nonce()}] },
+			UnsignedTX = #{ last_tx => get_tx_anchor(),
+					tags => [{<<"nonce">>, random_nonce()}] },
 			TX = case rand:uniform(2) of
 				1 ->
 					sign_tx(Key, UnsignedTX);
@@ -794,15 +796,14 @@ recovers_from_forks(ForkHeight) ->
 			assert_post_tx_to_slave(TX),
 			[TX]
 		end,
+	disconnect_from_slave(),
 	{MasterPostForkTXs, SlavePostForkTXs} = lists:foldl(
 		fun(Height, {MasterTXs, SlaveTXs}) ->
-			disconnect_from_slave(),
 			UpdatedMasterTXs = MasterTXs ++ ([NewMasterTX] = PostTXToMaster()),
 			ar_node:mine(),
 			BI = wait_until_height(Height),
 			assert_block_txs([NewMasterTX], BI),
 			UpdatedSlaveTXs = SlaveTXs ++ ([NewSlaveTX] = PostTXToSlave()),
-			connect_to_slave(),
 			slave_mine(),
 			SlaveBI = assert_slave_wait_until_height(Height),
 			slave_assert_block_txs([NewSlaveTX], SlaveBI),
@@ -811,7 +812,9 @@ recovers_from_forks(ForkHeight) ->
 		{[], []},
 		lists:seq(ForkHeight + 1, 9)
 	),
-	TX2 = sign_tx(Key, #{ last_tx => get_tx_anchor(), tags => [{<<"nonce">>, random_nonce()}] }),
+	connect_to_slave(),
+	TX2 = sign_tx(Key, #{ last_tx => get_tx_anchor(),
+			tags => [{<<"nonce">>, random_nonce()}] }),
 	assert_post_tx_to_slave(TX2),
 	assert_wait_until_receives_txs([TX2]),
 	slave_mine(),

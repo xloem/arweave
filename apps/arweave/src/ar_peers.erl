@@ -166,7 +166,7 @@ discover_peers() ->
 
 init([]) ->
 	process_flag(trap_exit, true),
-	ok = ar_events:subscribe(peer),
+	[ok, ok] = ar_events:subscribe([peer, block]),
 	load_peers(),
 	gen_server:cast(?MODULE, rank_peers),
 	gen_server:cast(?MODULE, ping_peers),
@@ -281,19 +281,26 @@ handle_info({event, peer, {served_chunk, Peer, TimeDelta, Size}}, State) ->
 	{noreply, State};
 
 handle_info({event, peer, {bad_response, {Peer, _Type, _Reason}}}, State) ->
-	Performance = get_or_init_performance(Peer),
-	Failures = Performance#performance.failures,
-	case Failures + 1 > ?TOLERATE_FAILURE_COUNT of
-		true ->
-			remove_peer(Peer);
-		false ->
-			Performance2 = Performance#performance{ failures = Failures + 1 },
-			ets:insert(?MODULE, {{peer, Peer}, Performance2})
-	end,
+	issue_warning(Peer),
 	{noreply, State};
 
 handle_info({event, peer, {banned, BannedPeer}}, State) ->
 	remove_peer(BannedPeer),
+	{noreply, State};
+
+handle_info({event, block, {rejected, failed_to_fetch_first_chunk, _H, Peer}}, State) ->
+	issue_warning(Peer),
+	{noreply, State};
+
+handle_info({event, block, {rejected, failed_to_fetch_second_chunk, _H, Peer}}, State) ->
+	issue_warning(Peer),
+	{noreply, State};
+
+handle_info({event, block, {rejected, failed_to_fetch_chunk, _H, Peer}}, State) ->
+	issue_warning(Peer),
+	{noreply, State};
+
+handle_info({event, block, _}, State) ->
 	{noreply, State};
 
 handle_info({'EXIT', _, normal}, State) ->
@@ -496,4 +503,15 @@ store_peers() ->
 					?MODULE
 				),
 			ar_storage:write_term(peers, {Total, Records})
+	end.
+
+issue_warning(Peer) ->
+	Performance = get_or_init_performance(Peer),
+	Failures = Performance#performance.failures,
+	case Failures + 1 > ?TOLERATE_FAILURE_COUNT of
+		true ->
+			remove_peer(Peer);
+		false ->
+			Performance2 = Performance#performance{ failures = Failures + 1 },
+			ets:insert(?MODULE, {{peer, Peer}, Performance2})
 	end.
