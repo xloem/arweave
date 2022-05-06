@@ -3,10 +3,10 @@
 -export([is_2_6_repacking_complete/1, block_field_size_limit/1, verify_timestamp/2,
 		get_max_timestamp_deviation/0, verify_last_retarget/2, verify_weave_size/3,
 		verify_cumulative_diff/2, verify_block_hash_list_merkle/2, compute_hash_list_merkle/1,
-		compute_h0/4, compute_h1/3, compute_h2/3, indep_hash/1, indep_hash/2,
-		generate_signed_hash/1, indep_hash/4, verify_signature/2,
+		compute_h0/4, compute_h1/3, compute_h2/3, indep_hash/1, indep_hash/2, indep_hash2/2,
+		generate_signed_hash/1, verify_signature/2,
 		generate_block_data_segment/1, generate_block_data_segment/2,
-		generate_block_data_segment/3, generate_block_data_segment_base/1,
+		generate_block_data_segment_base/1,
 		get_recall_space/3, verify_tx_root/1, hash_wallet_list/2, hash_wallet_list/3,
 		hash_wallet_list_without_reward_wallet/2, generate_hash_list_for_block/2,
 		generate_tx_root_for_block/1, generate_tx_root_for_block/2,
@@ -25,7 +25,7 @@
 
 %% @doc Return true if the given block is on the 2.6 fork and the 2.6 repacking is complete.
 is_2_6_repacking_complete(#block{ height = Height, packing_2_6_threshold = 0 }) ->
-	Height >= ar_fork:height_2_6();
+	Height >= ar_fork:height_2_7();
 is_2_6_repacking_complete(_B) ->
 	false.
 
@@ -95,12 +95,14 @@ block_field_size_limit(B) ->
 %% network which we don't take into account. Instead, we assume two nodes can
 %% deviate JOIN_CLOCK_TOLERANCE seconds in the opposite direction from each
 %% other.
-verify_timestamp(B, PrevB) ->
-	case is_2_6_repacking_complete(B) of
-		true ->
-			verify_timestamp2(B, PrevB);
+verify_timestamp(#block{ timestamp = Timestamp }, #block{ timestamp = PrevTimestamp }) ->
+	MaxNodesClockDeviation = get_max_timestamp_deviation(),
+	case Timestamp >= PrevTimestamp - MaxNodesClockDeviation of
 		false ->
-			verify_timestamp(B)
+			false;
+		true ->
+			CurrentTime = os:system_time(seconds),
+			Timestamp =< CurrentTime + MaxNodesClockDeviation
 	end.
 
 %% @doc Return the largest possible value by which the previous block's timestamp
@@ -174,23 +176,13 @@ compute_h2(H1, Chunk, H0) ->
 
 %% @doc Compute the block identifier (also referred to as "independent hash").
 indep_hash(B) ->
-	case B#block.height >= ar_fork:height_2_6() of
+	case is_2_6_repacking_complete(B) of
 		true ->
 			H = ar_block:generate_signed_hash(B),
-			case is_2_6_repacking_complete(B) of
-				false ->
-					H;
-				true ->
-					indep_hash(H, B#block.signature)
-			end;
+			indep_hash2(H, B#block.signature);
 		false ->
 			BDS = ar_block:generate_block_data_segment(B),
-			case B#block.height >= ar_fork:height_2_4() of
-				true ->
-					indep_hash(BDS, B#block.hash, B#block.nonce, B#block.poa);
-				false ->
-					indep_hash(BDS, B#block.hash, B#block.nonce)
-			end
+			indep_hash(BDS, B)
 	end.
 
 %% @doc Compute the hash signed by the block producer.
@@ -207,14 +199,20 @@ generate_signed_hash(#block{ previous_block = PrevH, timestamp = TS,
 		reward = Reward, hash_preimage = HashPreimage, recall_byte = RecallByte,
 		search_space_number = SearchSpaceNumber, recall_byte2 = RecallByte2,
 		nonce_limiter_info = NonceLimiterInfo,
-		previous_solution_hash = PreviousSolutionHash } = B) ->
+		previous_solution_hash = PreviousSolutionHash }) ->
 	GetTXID = fun(TXID) when is_binary(TXID) -> TXID; (TX) -> TX#tx.id end,
-	Segment_2_6 = << (encode_bin(PrevH, 8))/binary, (encode_int(TS, 8))/binary,
-			(encode_bin(Nonce, 16))/binary, (encode_int(Height, 8))/binary,
+	Nonce2 = binary:encode_unsigned(Nonce),
+	%% The only block where reward_address may be unclaimed
+	%% is the genesis block of a new weave.
+	Addr2 = case Addr of unclaimed -> <<>>; _ -> Addr end,
+	#nonce_limiter_info{ length = Len, checkpoints = Checkpoints,
+			last_step_checkpoints = LastStepCheckpoints } = NonceLimiterInfo,
+	Segment = << (encode_bin(PrevH, 8))/binary, (encode_int(TS, 8))/binary,
+			(encode_bin(Nonce2, 16))/binary, (encode_int(Height, 8))/binary,
 			(encode_int(Diff, 16))/binary, (encode_int(CDiff, 16))/binary,
 			(encode_int(LastRetarget, 8))/binary, (encode_bin(Hash, 8))/binary,
 			(encode_int(BlockSize, 16))/binary, (encode_int(WeaveSize, 16))/binary,
-			(encode_bin(Addr, 8))/binary, (encode_bin(TXRoot, 8))/binary,
+			(encode_bin(Addr2, 8))/binary, (encode_bin(TXRoot, 8))/binary,
 			(encode_bin(WalletList, 8))/binary,
 			(encode_bin(HashListMerkle, 8))/binary, (encode_int(RewardPool, 8))/binary,
 			(encode_int(Packing_2_5_Threshold, 8))/binary,
@@ -224,35 +222,34 @@ generate_signed_hash(#block{ previous_block = PrevH, timestamp = TS,
 			(encode_bin_list(Tags, 16, 16))/binary,
 			(encode_bin_list([GetTXID(TX) || TX <- TXs], 16, 8))/binary,
 			(encode_int(Packing_2_6_Threshold, 8))/binary, (encode_int(Reward, 8))/binary,
-			(encode_int(RecallByte, 16))/binary, HashPreimage:32/binary >>,
-	Segment =
-		case is_2_6_repacking_complete(B) of
-			false ->
-				Segment_2_6;
-			true ->
-				#nonce_limiter_info{ length = Len, checkpoints = Checkpoints,
-						last_step_checkpoints = LastStepCheckpoints } = NonceLimiterInfo,
-				<< Segment_2_6/binary, (encode_int(RecallByte2, 16))/binary,
-					(encode_bin(RewardKey, 8))/binary,
-					(encode_int(SearchSpaceNumber, 8))/binary, Len:16,
-					(length(Checkpoints)):16, (iolist_to_binary(Checkpoints))/binary,
-					(length(LastStepCheckpoints)):16,
-					(iolist_to_binary(LastStepCheckpoints))/binary,
-					PreviousSolutionHash:32/binary >>
-		end,
+			(encode_int(RecallByte, 16))/binary, (encode_bin(HashPreimage, 8))/binary,
+			(encode_int(RecallByte2, 16))/binary, (encode_bin(RewardKey, 8))/binary,
+			(encode_int(SearchSpaceNumber, 8))/binary, Len:16,
+			(length(Checkpoints)):16, (iolist_to_binary(Checkpoints))/binary,
+			(length(LastStepCheckpoints)):16, (iolist_to_binary(LastStepCheckpoints))/binary,
+			(encode_bin(PreviousSolutionHash, 8))/binary >>,
 	crypto:hash(sha384, Segment).
 
 %% @doc Compute the block identifier from the signed hash and block signature.
-indep_hash(SignedH, Signature) ->
+indep_hash2(SignedH, Signature) ->
 	crypto:hash(sha384, << SignedH:32/binary, Signature/binary >>).
 
 %% @doc Compute the block identifier of a pre-2.6 block.
-indep_hash(BDS, Hash, Nonce, POA) ->
-	ar_deep_hash:hash([BDS, Hash, Nonce, ar_block:poa_to_list(POA)]).
-
-%% @doc Compute the block identifier of a pre-2.6 block.
-indep_hash(BDS, Hash, Nonce) ->
-	ar_deep_hash:hash([BDS, Hash, Nonce]).
+indep_hash(BDS, B) ->
+	case B#block.height >= ar_fork:height_2_6() andalso B#block.recall_byte /= undefined of
+		true ->
+			ar_deep_hash:hash([BDS, B#block.hash, B#block.nonce,
+					ar_block:poa_to_list(B#block.poa),
+					integer_to_binary(B#block.recall_byte)]);
+		false ->
+			case B#block.height >= ar_fork:height_2_4() of
+				true ->
+					ar_deep_hash:hash([BDS, B#block.hash, B#block.nonce,
+							ar_block:poa_to_list(B#block.poa)]);
+				false ->
+					ar_deep_hash:hash([BDS, B#block.hash, B#block.nonce])
+			end
+	end.
 
 %% @doc Verify the block signature.
 verify_signature(SignedH, B) ->
@@ -267,40 +264,24 @@ generate_block_data_segment(B) ->
 
 %% @doc Generate a pre-2.6 block data segment given the computed "base".
 generate_block_data_segment(BDSBase, B) ->
-	generate_block_data_segment(
+	Props = [
 		BDSBase,
-		B#block.hash_list_merkle,
-		#{
-			timestamp => B#block.timestamp,
-			last_retarget => B#block.last_retarget,
-			diff => B#block.diff,
-			cumulative_diff => B#block.cumulative_diff,
-			reward_pool => B#block.reward_pool,
-			wallet_list => B#block.wallet_list
-		}
-	).
-
-%% @doc Generate a pre-2.6 block data segment given the computed "base",
-%% block index Merkle root, and the "time-dependent" fields.
-generate_block_data_segment(BDSBase, BlockIndexMerkle, TimeDependentParams) ->
-	#{
-		timestamp := Timestamp,
-		last_retarget := LastRetarget,
-		diff := Diff,
-		cumulative_diff := CDiff,
-		reward_pool := RewardPool,
-		wallet_list := WalletListHash
-	} = TimeDependentParams,
-	ar_deep_hash:hash([
-		BDSBase,
-		integer_to_binary(Timestamp),
-		integer_to_binary(LastRetarget),
-		integer_to_binary(Diff),
-		integer_to_binary(CDiff),
-		integer_to_binary(RewardPool),
-		WalletListHash,
-		BlockIndexMerkle
-	]).
+		integer_to_binary(B#block.timestamp),
+		integer_to_binary(B#block.last_retarget),
+		integer_to_binary(B#block.diff),
+		integer_to_binary(B#block.cumulative_diff),
+		integer_to_binary(B#block.reward_pool),
+		B#block.wallet_list,
+		B#block.hash_list_merkle
+	],
+	Props2 =
+		case B#block.height >= ar_fork:height_2_6() of
+			true ->
+				[integer_to_binary(B#block.reward) | Props];
+			false ->
+				Props
+		end,
+	ar_deep_hash:hash(Props2).
 
 %% @doc Generate a hash, which is used to produce a block data segment
 %% when combined with the time-dependent parameters, which frequently
@@ -401,29 +382,6 @@ validate_tags_length([_ | Tags], N) ->
 	validate_tags_length(Tags, N + 1);
 validate_tags_length([], _) ->
 	true.
-
-verify_timestamp2(#block{ timestamp = Timestamp }, #block{ timestamp = PrevTimestamp }) ->
-	MaxNodesClockDeviation = get_max_timestamp_deviation(),
-	case Timestamp >= PrevTimestamp - MaxNodesClockDeviation of
-		false ->
-			invalid_timestamp;
-		true ->
-			CurrentTime = os:system_time(seconds),
-			Timestamp =< CurrentTime + MaxNodesClockDeviation
-	end.
-
-verify_timestamp(#block{ timestamp = Timestamp }) ->
-	CurrentTime = os:system_time(seconds),
-	MaxNodesClockDeviation = ?JOIN_CLOCK_TOLERANCE * 2 + ?CLOCK_DRIFT_MAX,
-	(
-		Timestamp =< CurrentTime + MaxNodesClockDeviation
-		andalso
-		Timestamp >= CurrentTime - lists:sum([
-			?MINING_TIMESTAMP_REFRESH_INTERVAL,
-			?MAX_BLOCK_PROPAGATION_TIME,
-			MaxNodesClockDeviation
-		])
-	).
 
 encode_int(N, S) -> ar_serialize:encode_int(N, S).
 encode_bin(N, S) -> ar_serialize:encode_bin(N, S).

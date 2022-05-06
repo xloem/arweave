@@ -15,7 +15,7 @@
 		block_index_to_json_struct/1, json_struct_to_block_index/1,
 		jsonify/1, dejsonify/1, json_decode/1, json_decode/2,
 		query_to_json_struct/1, json_struct_to_query/1,
-		chunk_proof_to_json_map/1, json_map_to_chunk_proof/1, encode_int/2,
+		chunk_proof_to_json_map/1, json_map_to_chunk_proof/1, encode_int/2, encode_bin/2,
 		encode_bin_list/3, signature_type_to_binary/1, binary_to_signature_type/1]).
 
 -include_lib("arweave/include/ar.hrl").
@@ -32,7 +32,6 @@ block_to_binary(#block{ indep_hash = H, previous_block = PrevH, timestamp = TS,
 		weave_size = WeaveSize, reward_addr = Addr, tx_root = TXRoot,
 		wallet_list = WalletList, hash_list_merkle = HashListMerkle,
 		reward_pool = RewardPool, packing_2_5_threshold = Threshold,
-		packing_2_6_threshold = Packing_2_6_Threshold,
 		strict_data_split_threshold = StrictChunkThreshold,
 		usd_to_ar_rate = Rate, scheduled_usd_to_ar_rate = ScheduledRate,
 		poa = #poa{ option = Option, chunk = Chunk, data_path = DataPath,
@@ -47,13 +46,8 @@ block_to_binary(#block{ indep_hash = H, previous_block = PrevH, timestamp = TS,
 				_ ->
 					ScheduledRate
 			end,
-	Nonce2 =
-		case {Height >= ar_fork:height_2_6(), Packing_2_6_Threshold == 0} of
-			{true, true} ->
-				binary:encode_unsigned(Nonce);
-			_ ->
-				Nonce
-		end,
+	Nonce2 = case ar_block:is_2_6_repacking_complete(B) of
+			true -> binary:encode_unsigned(Nonce); false -> Nonce end,
 	<< H:48/binary, (encode_bin(PrevH, 8))/binary, (encode_int(TS, 8))/binary,
 			(encode_bin(Nonce2, 16))/binary, (encode_int(Height, 8))/binary,
 			(encode_int(Diff, 16))/binary, (encode_int(CDiff, 16))/binary,
@@ -106,7 +100,8 @@ binary_to_block(<< H:48/binary, PrevHSize:8, PrevH:PrevHSize/binary,
 			_ -> {RateDividend, RateDivisor} end,
 	ScheduledRate = case SchedRateDivisorSize of 0 -> undefined;
 			_ -> {SchedRateDividend, SchedRateDivisor} end,
-	Addr2 = case Addr of <<>> -> unclaimed; _ -> Addr end,
+	Addr2 = case {Addr, Height >= ar_fork:height_2_6(), Height /= 0} of
+			{<<>>, false, _} -> unclaimed; {<<>>, _, false} -> unclaimed; _ -> Addr end,
 	B = #block{ indep_hash = H, previous_block = PrevH, timestamp = TS,
 			nonce = Nonce, height = Height, diff = Diff, cumulative_diff = CDiff,
 			last_retarget = LastRetarget, hash = Hash, block_size = BlockSize,
@@ -166,8 +161,10 @@ block_to_json_struct(
 			false ->
 				Tags
 		end,
+	Nonce2 = case ar_block:is_2_6_repacking_complete(B) of
+			true -> binary:encode_unsigned(Nonce); false -> Nonce end,
 	JSONElements =
-		[{nonce, ar_util:encode(Nonce)}, {previous_block, ar_util:encode(PrevHash)},
+		[{nonce, ar_util:encode(Nonce2)}, {previous_block, ar_util:encode(PrevHash)},
 				{timestamp, TimeStamp}, {last_retarget, LastRetarget}, {diff, JSONDiff},
 				{height, Height}, {hash, ar_util:encode(Hash)},
 				{indep_hash, ar_util:encode(IndepHash)},
@@ -265,18 +262,19 @@ encode_2_6_fields(#block{ height = Height, packing_2_6_threshold = Packing_2_6_T
 		false ->
 			<<>>;
 		true ->
-			<< (encode_int(Packing_2_6_Threshold, 8))/binary, HashPreimage:32/binary,
-				(encode_int(RecallByte, 16))/binary, (encode_int(Reward, 8))/binary >>
+			<< (encode_int(Packing_2_6_Threshold, 8))/binary,
+				(encode_bin(HashPreimage, 8))/binary, (encode_int(RecallByte, 16))/binary,
+				(encode_int(Reward, 8))/binary >>
 	end.
 
-encode_post_repacking_2_6_fields(#block{ height = Height,
-		packing_2_6_threshold = Packing_2_6_Threshold,
-		previous_solution_hash = PreviousSolutionHash, search_space_number = SearchSpaceNumber,
-		signature = Sig, nonce_limiter_info = NonceLimiterInfo,
-		reward_key = {_Type, RewardKey}, poa2 = #poa{ chunk = Chunk, data_path = DataPath,
-			tx_path = TXPath }, recall_byte2 = RecallByte2 }) ->
-	case {Height >= ar_fork:height_2_6(), Packing_2_6_Threshold == 0} of
-		{true, true} ->
+encode_post_repacking_2_6_fields(#block{ previous_solution_hash = PreviousSolutionHash,
+		search_space_number = SearchSpaceNumber, signature = Sig,
+		nonce_limiter_info = NonceLimiterInfo,
+		poa2 = #poa{ chunk = Chunk, data_path = DataPath, tx_path = TXPath },
+		recall_byte2 = RecallByte2 } = B) ->
+	RewardKey = case B#block.reward_key of undefined -> <<>>; {_Type, Key} -> Key end,
+	case ar_block:is_2_6_repacking_complete(B) of
+		true ->
 			<< (encode_bin(Sig, 8))/binary, (encode_int(RecallByte2, 16))/binary,
 				(encode_bin(PreviousSolutionHash, 8))/binary,
 				(encode_int(SearchSpaceNumber, 8))/binary,
@@ -376,12 +374,15 @@ parse_block_transactions(Bin, B) ->
 			{error, invalid_input}
 	end.
 
-parse_block_2_6_fields(B, << Size:8, Packing_2_6_Threshold:(Size * 8), HashPreimage:32/binary,
+parse_block_2_6_fields(B, << Size:8, Packing_2_6_Threshold:(Size * 8),
+		HashPreimageSize:8, HashPreimage:HashPreimageSize/binary,
 		RecallByteSize:16, RecallByte:(RecallByteSize * 8), RewardSize:8,
 		Reward:(RewardSize * 8), Rest/binary >>) ->
+	%% The only block where recall_byte may be undefined is the genesis block of a new weave.
+	RecallByte2 = case RecallByteSize of 0 -> undefined; _ -> RecallByte end,
 	B2 = B#block{ packing_2_6_threshold = Packing_2_6_Threshold, hash_preimage = HashPreimage,
-			recall_byte = RecallByte, reward = Reward },
-	case {Rest, Packing_2_6_Threshold == 0} of
+			recall_byte = RecallByte2, reward = Reward },
+	case {Rest, ar_block:is_2_6_repacking_complete(B2)} of
 		{<<>>, false} ->
 			{ok, B2};
 		{<<>>, true} ->
@@ -403,15 +404,21 @@ parse_post_repacking_2_6_fields(B, << SigSize:8, Sig:SigSize/binary, RecallByte2
 		ChunkSize:24, Chunk:ChunkSize/binary, RewardKeySize:8,
 		RewardKey:RewardKeySize/binary, TXPathSize:24, TXPath:TXPathSize/binary,
 		DataPathSize:24, DataPath:DataPathSize/binary >>) ->
-	case parse_reward_key(B#block.reward_addr, RewardKey) of
+	Height = B#block.height,
+	case parse_reward_key(B#block.reward_addr, RewardKeySize, RewardKey, Height) of
 		{ok, RewardKey2} ->
 			Nonce = binary:decode_unsigned(B#block.nonce),
 			NonceLimiterInfo = #nonce_limiter_info{ length = NonceLimiterLen,
-					last_step_checkpoints = parse_checkpoints(LastCheckpoints),
-					checkpoints = parse_checkpoints(Checkpoints) },
-			{ok, B#block{ nonce = Nonce, recall_byte2 = RecallByte2,
+					last_step_checkpoints = parse_checkpoints(LastCheckpoints, Height),
+					checkpoints = parse_checkpoints(Checkpoints, Height) },
+			%% The only block where recall_byte2 and search_space_number may be undefined
+			%% is the genesis block of a new weave.
+			RecallByte22 = case RecallByte2Size of 0 -> undefined; _ -> RecallByte2 end,
+			SearchSpaceNumber2 = case SearchSpaceNumberSize of 0 -> undefined;
+					_ -> SearchSpaceNumber end,
+			{ok, B#block{ nonce = Nonce, recall_byte2 = RecallByte22,
 					previous_solution_hash = PreviousSolutionHash,
-					signature = Sig, search_space_number = SearchSpaceNumber,
+					signature = Sig, search_space_number = SearchSpaceNumber2,
 					reward_key = RewardKey2, nonce_limiter_info = NonceLimiterInfo,
 					poa2 = #poa{ chunk = Chunk, data_path = DataPath, tx_path = TXPath } }};
 		Error ->
@@ -420,19 +427,25 @@ parse_post_repacking_2_6_fields(B, << SigSize:8, Sig:SigSize/binary, RecallByte2
 parse_post_repacking_2_6_fields(_B, _Bin) ->
 	{error, invalid_input}.
 
-parse_checkpoints(<< Checkpoint:32 >>) ->
+parse_checkpoints(<<>>, 0) ->
+	[];
+parse_checkpoints(_, 0) ->
+	{error, invalid_checkpoints};
+parse_checkpoints(<< Checkpoint:32 >>, _Height) ->
 	%% The block must have at least one checkpoint (the last nonce limiter output).
 	[<< Checkpoint:32 >>];
-parse_checkpoints(<< Checkpoint:32, Rest/binary >>) ->
-	[Checkpoint | parse_checkpoints(Rest)].
+parse_checkpoints(<< Checkpoint:32, Rest/binary >>, Height) ->
+	[Checkpoint | parse_checkpoints(Rest, Height)].
 
-parse_reward_key(<< TypeByte:1/binary, _Addr:32/binary >>, Key)
+parse_reward_key(unclaimed, 0, <<>>, 0) ->
+	{ok, undefined};
+parse_reward_key(<< TypeByte:1/binary, _Addr:32/binary >>, _KeySize, Key, _Height)
 		when TypeByte == (?ECDSA_TYPE_BYTE) ->
 	{ok, {{?ECDSA_SIGN_ALG, secp256k1}, Key}};
-parse_reward_key(<< TypeByte:1/binary, _Addr:32/binary >>, Key)
+parse_reward_key(<< TypeByte:1/binary, _Addr:32/binary >>, _KeySize, Key, _Height)
 		when TypeByte == (?EDDSA_TYPE_BYTE) ->
 	{ok, {{?EDDSA_SIGN_ALG, ed25519}, Key}};
-parse_reward_key(_Addr, _Key) ->
+parse_reward_key(_Addr, _KeySize, _Key, _Height) ->
 	{error, invalid_reward_addr}.
 
 parse_block_tags(<< TagsLen:16, Rest/binary >>) when TagsLen =< 2048 ->
@@ -1209,7 +1222,10 @@ binary_to_signature_type(List) ->
 
 %%% Tests: ar_serialize
 
-block_to_binary_test() ->
+block_to_binary_test_() ->
+	{timeout, 10, fun test_block_to_binary/0}.
+
+test_block_to_binary() ->
 	Dir = filename:dirname(?FILE),
 	BlockFixtureDir = filename:join(Dir, "../test/fixtures/blocks"),
 	TXFixtureDir = filename:join(Dir, "../test/fixtures/txs"),
@@ -1255,7 +1271,7 @@ test_block_to_binary([Fixture | Fixtures], TXFixtureDir) ->
 			|| TX <- BlockTXs] },
 	test_block_to_binary(B7),
 	B8 = B#block{ txs = [TX#tx{ signature_type = {?EDDSA_SIGN_ALG, ed25519} }
-			|| TX <- BlockTXs], packing_2_6_threshold = 1 },
+			|| TX <- BlockTXs] },
 	test_block_to_binary(B8),
 	test_block_to_binary(Fixtures, TXFixtureDir).
 
@@ -1346,7 +1362,10 @@ block_index_to_binary_test() ->
 				crypto:strong_rand_bytes(32)} || _ <- lists:seq(1, 1000)]]).
 
 %% @doc Convert a new block into JSON and back, ensure the result is the same.
-block_roundtrip_test() ->
+block_roundtrip_test_() ->
+	ar_test_fork:test_on_fork(height_2_6, infinity, fun test_block_roundtrip/0).
+
+test_block_roundtrip() ->
 	[B] = ar_weave:init(),
 	JSONStruct = jsonify(block_to_json_struct(B)),
 	BRes = json_struct_to_block(JSONStruct),

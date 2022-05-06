@@ -589,10 +589,10 @@ test_add_block_with_invalid_hash() ->
 		},
 	%% Try to post an invalid block. This triggers a ban in ar_blacklist_middleware.
 	InvalidH = crypto:strong_rand_bytes(48),
+	ok = ar_events:subscribe(block),
 	?assertMatch(
 		{ok, {{<<"200">>, _}, _, _, _, _}},
 		send_new_block(Peer, B1Shadow#block{ indep_hash = InvalidH, nonce = <<>> })),
-	ok = ar_events:subscribe(block),
 	receive
 		{event, block, {rejected, invalid_hash, InvalidH, Peer}} ->
 			ok
@@ -604,15 +604,9 @@ test_add_block_with_invalid_hash() ->
 			Peer, B1Shadow#block{ indep_hash = crypto:strong_rand_bytes(48) })),
 	ar_blacklist_middleware:reset(),
 	%% The valid block with the ID from the failed attempt can still go through.
-	?assertMatch(
-		{ok, {{<<"200">>, _}, _, _, _, _}},
-		send_new_block(Peer, B1Shadow)
-	),
+	?assertMatch({ok, {{<<"200">>, _}, _, _, _, _}}, send_new_block(Peer, B1Shadow)),
 	%% Try to post the same block again.
-	?assertMatch(
-		{ok, {{<<"200">>, _}, _, <<>>, _, _}},
-		send_new_block(Peer, B1Shadow)
-	),
+	?assertMatch({ok, {{<<"208">>, _}, _, _, _, _}}, send_new_block(Peer, B1Shadow)),
 	%% Correct hash, but invalid PoW.
 	B2Shadow = B1Shadow#block{ reward_addr = crypto:strong_rand_bytes(32) },
 	InvalidH2 = ar_block:indep_hash(B2Shadow),
@@ -655,49 +649,36 @@ test_add_external_block_with_invalid_timestamp_pre_fork_2_6() ->
 	FutureTimestampTolerance = ?JOIN_CLOCK_TOLERANCE * 2 + ?CLOCK_DRIFT_MAX,
 	TooFarFutureTimestamp = os:system_time(second) + FutureTimestampTolerance + 3,
 	B2Shadow = update_block_timestamp(B1Shadow, TooFarFutureTimestamp),
-	?assertMatch({ok, {{<<"200">>, _}, _, _, _, _}}, send_new_block(Peer, B2Shadow)),
 	ok = ar_events:subscribe(block),
+	?assertMatch({ok, {{<<"200">>, _}, _, _, _, _}}, send_new_block(Peer, B2Shadow)),
 	H = B2Shadow#block.indep_hash,
 	receive
-		{event, block, {rejected, out_of_sync_timestamp, H, Peer}} ->
+		{event, block, {rejected, invalid_timestamp, H, Peer}} ->
 			ok
 		after 500 ->
-			?assert(false, "Did not receive the rejected block event "
-					"(out_of_sync_timestamp).")
+			?assert(false, "Did not receive the rejected block event (invalid_timestamp).")
 	end,
 	%% Expect the timestamp from the future within the tolerance interval to be accepted.
 	OkFutureTimestamp = os:system_time(second) + FutureTimestampTolerance - 3,
 	B3Shadow = update_block_timestamp(B1Shadow, OkFutureTimestamp),
-	?assertMatch(
-		{ok, {{<<"200">>, _}, _, _, _, _}},
-		send_new_block(Peer, B3Shadow)
-	),
+	?assertMatch({ok, {{<<"200">>, _}, _, _, _, _}}, send_new_block(Peer, B3Shadow)),
 	%% Expect the timestamp far from the past to be rejected.
-	PastTimestampTolerance = lists:sum([
-		?JOIN_CLOCK_TOLERANCE * 2,
-		?CLOCK_DRIFT_MAX,
-		?MINING_TIMESTAMP_REFRESH_INTERVAL,
-		?MAX_BLOCK_PROPAGATION_TIME
-	]),
-	TooFarPastTimestamp = os:system_time(second) - PastTimestampTolerance - 3,
+	PastTimestampTolerance = lists:sum([?JOIN_CLOCK_TOLERANCE * 2, ?CLOCK_DRIFT_MAX]),
+	TooFarPastTimestamp = B0#block.timestamp - PastTimestampTolerance - 3,
 	B4Shadow = update_block_timestamp(B1Shadow, TooFarPastTimestamp),
 	?assertMatch({ok, {{<<"200">>, _}, _, _, _, _}}, send_new_block(Peer, B4Shadow)),
 	H2 = B4Shadow#block.indep_hash,
 	receive
-		{event, block, {rejected, out_of_sync_timestamp, H2, Peer}} ->
+		{event, block, {rejected, invalid_timestamp, H2, Peer}} ->
 			ok
 		after 500 ->
-			?assert(false, "Did not receive the rejected block event "
-					"(out_of_sync_timestamp).")
+			?assert(false, "Did not receive the rejected block event (invalid_timestamp).")
 	end,
 	%% Expect the block with a timestamp from the past within the tolerance interval
 	%% to be accepted.
-	OkPastTimestamp = os:system_time(second) - PastTimestampTolerance + 3,
+	OkPastTimestamp = B0#block.timestamp - PastTimestampTolerance + 3,
 	B5Shadow = update_block_timestamp(B1Shadow, OkPastTimestamp),
-	?assertMatch(
-		{ok, {{<<"200">>, _}, _, _, _, _}},
-		send_new_block(Peer, B5Shadow)
-	),
+	?assertMatch({ok, {{<<"200">>, _}, _, _, _, _}}, send_new_block(Peer, B5Shadow)),
 	%% Wait a little bit, before the height_2_6 mock is removed.
 	%% Otherwise, the node may crash trying to validate the new block
 	%% with the previous block not having a packing_2_6_threshold field.
@@ -722,32 +703,22 @@ test_add_external_block_with_invalid_timestamp() ->
 	FutureTimestampTolerance = ?JOIN_CLOCK_TOLERANCE * 2 + ?CLOCK_DRIFT_MAX,
 	TooFarFutureTimestamp = os:system_time(second) + FutureTimestampTolerance + 3,
 	B2Shadow = update_block_timestamp(B1Shadow, TooFarFutureTimestamp),
-	?assertMatch({ok, {{<<"200">>, _}, _, _, _, _}}, send_new_block(Peer, B2Shadow)),
 	ok = ar_events:subscribe(block),
+	?assertMatch({ok, {{<<"200">>, _}, _, _, _, _}}, send_new_block(Peer, B2Shadow)),
 	H = B2Shadow#block.indep_hash,
 	receive
-		{event, block, {rejected, out_of_sync_timestamp, H, Peer}} ->
+		{event, block, {rejected, invalid_timestamp, H, Peer}} ->
 			ok
 		after 500 ->
-			?assert(false, "Did not receive the rejected block event "
-					"(out_of_sync_timestamp).")
+			?assert(false, "Did not receive the rejected block event (invalid_timestamp)")
 	end,
 	%% Expect the timestamp from the future within the tolerance interval to be accepted.
 	OkFutureTimestamp = os:system_time(second) + FutureTimestampTolerance - 3,
 	B3Shadow = update_block_timestamp(B1Shadow, OkFutureTimestamp),
-	?assertMatch(
-		{ok, {{<<"200">>, _}, _, _, _, _}},
-		send_new_block(Peer, B3Shadow)
-	),
-	%% Expect the timestamp too far behind the previous timestamp to be rejected,
-	%% the peer banned.
-	PastTimestampTolerance = lists:sum([
-		?JOIN_CLOCK_TOLERANCE * 2,
-		?CLOCK_DRIFT_MAX,
-		?MINING_TIMESTAMP_REFRESH_INTERVAL,
-		?MAX_BLOCK_PROPAGATION_TIME
-	]),
-	TooFarPastTimestamp = os:system_time(second) - PastTimestampTolerance - 1,
+	?assertMatch({ok, {{<<"200">>, _}, _, _, _, _}}, send_new_block(Peer, B3Shadow)),
+	%% Expect the timestamp too far behind the previous timestamp to be rejected.
+	PastTimestampTolerance = lists:sum([?JOIN_CLOCK_TOLERANCE * 2, ?CLOCK_DRIFT_MAX]),
+	TooFarPastTimestamp = B0#block.timestamp - PastTimestampTolerance - 1,
 	B4Shadow = update_block_timestamp(B1Shadow, TooFarPastTimestamp),
 	?assertMatch({ok, {{<<"200">>, _}, _, _, _, _}}, send_new_block(Peer, B4Shadow)),
 	H2 = B4Shadow#block.indep_hash,
@@ -758,20 +729,9 @@ test_add_external_block_with_invalid_timestamp() ->
 			?assert(false, "Did not receive the rejected block event "
 					"(invalid_timestamp).")
 	end,
-	%% Verify the IP address of self is banned in ar_blacklist_middleware.
-	?assertMatch(
-		{ok, {{<<"403">>, _}, _,
-				<<"IP address blocked due to previous request.">>, _, _}},
-		send_new_block(Peer, B4Shadow)),
-	%% Expect the block with a timestamp from the past within the tolerance interval
-	%% to be accepted.
-	ar_blacklist_middleware:reset(),
-	OkPastTimestamp = os:system_time(second) - PastTimestampTolerance + 1,
+	OkPastTimestamp = B0#block.timestamp - PastTimestampTolerance + 1,
 	B5Shadow = update_block_timestamp(B1Shadow, OkPastTimestamp),
-	?assertMatch(
-		{ok, {{<<"200">>, _}, _, _, _, _}},
-		send_new_block(Peer, B5Shadow)
-	).
+	?assertMatch({ok, {{<<"200">>, _}, _, _, _, _}}, send_new_block(Peer, B5Shadow)).
 
 update_block_timestamp(B, Timestamp) ->
 	#block{

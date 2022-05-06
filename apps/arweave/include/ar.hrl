@@ -377,22 +377,22 @@
 	%% The nonce chosen to solve the mining problem.
 	nonce,
 	%% `indep_hash` of the previous block in the weave.
-	previous_block,
+	previous_block = <<>>,
 	%% POSIX time of block discovery.
-	timestamp = os:system_time(seconds),
+	timestamp,
 	%% POSIX time of the last difficulty retarget.
 	last_retarget,
 	%% Mining difficulty, the number `hash` must be greater than.
 	diff,
-	height,
+	height = 0,
 	%% Mining solution hash.
-	hash,
+	hash = <<>>,
 	%% The block identifier.
 	indep_hash,
 	%% The list of transaction identifiers or transactions (tx records).
 	txs = [],
 	%% The Merkle root of the tree of Merkle roots of block's transactions' data.
-	tx_root,
+	tx_root = <<>>,
 	%% The Merkle tree of Merkle roots of block's transactions' data. Used internally,
 	%% not gossiped.
 	tx_tree = [],
@@ -401,17 +401,17 @@
 	%% The Merkle root of the block index - the list of
 	%% {`indep_hash`, `weave_size`, `tx_root`} triplets describing the past blocks
 	%% excluding this one.
-	hash_list_merkle,
+	hash_list_merkle = <<>>,
 	%% The root hash of the Merkle Patricia Tree containing all wallet (account) balances and
 	%% the identifiers of the last transactions posted by them, if any
-	wallet_list = unset,
+	wallet_list,
 	%% The mining address. Before the fork 2.6, either the atom 'unclaimed' or
 	%% a SHA2-256 hash of the RSA PSS public key. In 2.6, a 33-byte string - the first
 	%% byte determines the address type (ECDSA or EDDSA), the rest is the SHA2-256 hash
 	%% of the ECC public key.
     reward_addr = unclaimed,
 	%% Miner-specified tags (a list of strings) to store with the block.
-    tags,
+    tags = [],
 	%% The number of Winston in the endowment pool.
 	reward_pool,
 	%% The total number of bytes whose storage is incentivized.
@@ -465,14 +465,14 @@
 	packing_2_6_threshold,
 	%% A part of the solution hash preimage. Used for the initial solution validation
 	%% without a data chunk.
-	hash_preimage,
+	hash_preimage = <<>>,
 	%% The absolute recall offset.
 	recall_byte,
 	%% The total amount of winston the miner receives for this block.
-	reward,
+	reward = 0,
 
 	%% The solution hash of the previous block.
-	previous_solution_hash,
+	previous_solution_hash = <<>>,
 	%% The sequence number of the search space where the block was found.
 	search_space_number,
 	%% The nonce limiter information.
@@ -482,7 +482,7 @@
 	%% The absolute second recall offset.
 	recall_byte2,
 	%% The block signature.
-	signature,
+	signature = <<>>,
 	%% {KeyType, PubKey} - an ECDSA secp256k1 or EDDSA edd25519 public key
 	%% the block was signed with.
 	reward_key

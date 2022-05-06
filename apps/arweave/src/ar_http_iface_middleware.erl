@@ -673,7 +673,8 @@ handle(<<"GET">>, [<<"recent_hash_list_diff">>], Req, Pid) ->
 				{ok, Body, Req2} ->
 					case decode_recent_hash_list(Body) of
 						{ok, ReverseHL} ->
-							BlockTXPairs = ar_node:get_block_txs_pairs(),
+							BlockTXPairs = lists:sublist(ar_node:get_block_txs_pairs(),
+									?STORE_BLOCKS_BEHIND_CURRENT),
 							case get_recent_hash_list_diff(ReverseHL,
 									lists:reverse(BlockTXPairs)) of
 								no_intersection ->
@@ -1273,7 +1274,7 @@ handle_get_block(H, Req, Pid, Encoding) ->
 					%% include the requested transactions without doing disk lookups.
 					case read_complete_body(Req, Pid, ?MAX_SERIALIZED_MISSING_TX_INDICES) of
 						{ok, Body, Req2} ->
-							case parse_missing_tx_indices(Body) of
+							case ar_util:parse_list_indices(Body) of
 								error ->
 									{400, #{}, <<>>, Req2};
 								Indices ->
@@ -1315,23 +1316,6 @@ handle_get_block3(B, Req, Encoding) ->
 				ar_serialize:block_to_binary(B)
 		end,
 	{200, #{}, Bin, Req}.
-
-parse_missing_tx_indices(Input) ->
-	parse_missing_tx_indices(Input, 0).
-
-parse_missing_tx_indices(<< 0:1, Rest/bitstring >>, N) ->
-	parse_missing_tx_indices(Rest, N + 1);
-parse_missing_tx_indices(<< 1:1, Rest/bitstring >>, N) ->
-	case parse_missing_tx_indices(Rest, N + 1) of
-		error ->
-			error;
-		Indices ->
-			[N | Indices]
-	end;
-parse_missing_tx_indices(<<>>, _N) ->
-	[];
-parse_missing_tx_indices(_BadInput, _N) ->
-	error.
 
 collect_missing_transactions(TXs, Indices) ->
 	collect_missing_transactions(TXs, Indices, 0).
@@ -1905,7 +1889,7 @@ post_block(check_transactions_are_present, {BShadow, Peer}, Req, ReceiveTimestam
 post_block(enqueue_block, {B, Peer}, Req, Timestamp) ->
 	ar_block_pre_validator:pre_validate(B, Peer, Timestamp, erlang:get(read_body_time),
 			erlang:get(body_size)),
-	{200, #{}, <<>>, Req}.
+	{200, #{}, <<"OK">>, Req}.
 
 encode_txids([]) ->
 	<<>>;
@@ -1943,7 +1927,9 @@ decode_recent_hash_list(_Rest) ->
 
 get_recent_hash_list_diff([H | HL], [{H, _TXIDs} | BlockTXPairs]) ->
 	get_recent_hash_list_diff(HL, BlockTXPairs, H);
-get_recent_hash_list_diff(_, _) ->
+get_recent_hash_list_diff([_H | HL], BlockTXPairs) ->
+	get_recent_hash_list_diff(HL, BlockTXPairs);
+get_recent_hash_list_diff([], _BlockTXPairs) ->
 	no_intersection.
 
 get_recent_hash_list_diff([H | HL], [{H, _SizeTaggedTXs} | BlockTXPairs], _PrevH) ->

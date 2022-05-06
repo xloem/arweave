@@ -71,14 +71,13 @@ handle_cast(pre_validate, #state{ pqueue = Q, size = Size, ip_timestamps = IPTim
 			{{_, {B, BDS, PrevB, Peer, Timestamp, ReadBodyTime, BodySize}},
 					Q2} = gb_sets:take_largest(Q),
 			Size2 = Size - BodySize,
-			ThrottleByIPResult = throttle_by_ip(Peer, Timestamp, IPTimestamps),
+			ThrottleByIPResult = throttle_by_ip(Peer, IPTimestamps),
 			{IPTimestamps3, HashTimestamps3} =
 				case ThrottleByIPResult of
 					false ->
 						{IPTimestamps, HashTimestamps};
 					{true, IPTimestamps2} ->
-						case throttle_by_solution_hash(B#block.hash, Timestamp,
-								HashTimestamps) of
+						case throttle_by_solution_hash(B#block.hash, HashTimestamps) of
 							{true, HashTimestamps2} ->
 								pre_validate_pow_or_search_space_number(B, BDS, PrevB, Peer,
 										Timestamp, ReadBodyTime, BodySize),
@@ -203,21 +202,12 @@ pre_validate_indep_hash(#block{ indep_hash = H } = B, PrevB, Peer, Timestamp, Re
 pre_validate_timestamp(B, BDS, PrevB, Peer, Timestamp, ReadBodyTime, BodySize) ->
 	#block{ indep_hash = H } = B,
 	case ar_block:verify_timestamp(B, PrevB) of
-		invalid_timestamp ->
-			post_block_reject_warn(B, check_timestamp, Peer,
-					[{block_time, B#block.timestamp},
-					{prev_block_time, PrevB#block.timestamp}]),
-			ar_blacklist_middleware:ban_peer(Peer, ?BAD_BLOCK_BAN_TIME),
-			ar_events:send(block, {rejected, invalid_timestamp, H, Peer}),
-			ok;
 		false ->
-			%% If the network actually applies this block, but we received it
-			%% late for some reason, ar_poller may pick it up soon. If it is too early,
-			%% ar_poller may fetch it later.
-			post_block_reject_warn(B, check_timestamp, Peer,
-					[{block_time, B#block.timestamp},
-							{current_time, os:system_time(seconds)}]),
-			ar_events:send(block, {rejected, out_of_sync_timestamp, H, Peer}),
+			%% If it is too early and nobody will re-send the block,
+			%% ar_poller will fetch it later.
+			post_block_reject_warn(B, check_timestamp, Peer, [{block_time, B#block.timestamp},
+					{current_time, os:system_time(seconds)}]),
+			ar_events:send(block, {rejected, invalid_timestamp, H, Peer}),
 			ar_ignore_registry:remove_temporary(B#block.indep_hash),
 			ok;
 		true ->
@@ -566,16 +556,14 @@ compute_hash(B) ->
 	case ar_block:is_2_6_repacking_complete(B) of
 		false ->
 			BDS = ar_block:generate_block_data_segment(B),
-			Hash = B#block.hash,
-			Nonce = B#block.nonce,
-			{ok, {BDS, ar_block:indep_hash(BDS, Hash, Nonce, B#block.poa)}};
+			{ok, {BDS, ar_block:indep_hash(BDS, B)}};
 		true ->
 			SignedH = ar_block:generate_signed_hash(B),
 			case ar_block:verify_signature(SignedH, B) of
 				false ->
 					{error, invalid_signature};
 				{true, SignedH} ->
-					{ok, ar_block:indep_hash(SignedH, B#block.signature)}
+					{ok, ar_block:indep_hash2(SignedH, B#block.signature)}
 			end
 	end.
 
@@ -673,16 +661,16 @@ drop_tail(Q, Size) ->
 	{{_Priority, {_, _, _, _, BodySize}}, Q2} = gb_sets:take_smallest(Q),
 	drop_tail(Q2, Size - BodySize).
 
-throttle_by_ip(Peer, Timestamp, Timestamps) ->
+throttle_by_ip(Peer, Timestamps) ->
 	IP = get_ip(Peer),
 	Now = os:system_time(millisecond),
-	gen_server:cast_after(?THROTTLE_BY_IP_INTERVAL_MS * 2, ?MODULE,
+	ar_util:cast_after(?THROTTLE_BY_IP_INTERVAL_MS * 2, ?MODULE,
 			{may_be_remove_ip_timestamp, IP}),
 	case maps:get(IP, Timestamps, not_set) of
 		not_set ->
-			{true, maps:put(IP, Timestamp, Timestamps)};
-		Timestamp2 when Timestamp2 < Now - ?THROTTLE_BY_IP_INTERVAL_MS ->
-			{true, maps:put(IP, Timestamp, Timestamps)};
+			{true, maps:put(IP, Now, Timestamps)};
+		Timestamp when Timestamp < Now - ?THROTTLE_BY_IP_INTERVAL_MS ->
+			{true, maps:put(IP, Now, Timestamps)};
 		_ ->
 			false
 	end.
@@ -690,15 +678,15 @@ throttle_by_ip(Peer, Timestamp, Timestamps) ->
 get_ip({A, B, C, D, _Port}) ->
 	{A, B, C, D}.
 
-throttle_by_solution_hash(H, Timestamp, Timestamps) ->
+throttle_by_solution_hash(H, Timestamps) ->
 	Now = os:system_time(millisecond),
-	gen_server:cast_after(?THROTTLE_BY_SOLUTION_HASH_INTERVAL_MS * 2, ?MODULE,
+	ar_util:cast_after(?THROTTLE_BY_SOLUTION_HASH_INTERVAL_MS * 2, ?MODULE,
 			{may_be_remove_h_timestamp, H}),
 	case maps:get(H, Timestamps, not_set) of
 		not_set ->
-			{true, maps:put(H, Timestamp, Timestamps)};
-		Timestamp2 when Timestamp2 < Now - ?THROTTLE_BY_SOLUTION_HASH_INTERVAL_MS ->
-			{true, maps:put(H, Timestamp, Timestamps)};
+			{true, maps:put(H, Now, Timestamps)};
+		Timestamp when Timestamp < Now - ?THROTTLE_BY_SOLUTION_HASH_INTERVAL_MS ->
+			{true, maps:put(H, Now, Timestamps)};
 		_ ->
 			false
 	end.

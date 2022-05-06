@@ -61,7 +61,6 @@ test_polling() ->
 	[{SH13, _, _} | _] = slave_wait_until_height(12),
 	?assertNotEqual(SH13, MH13),
 	connect_to_slave(),
-	set_slave_as_trusted_peer(),
 	slave_mine(),
 	[{MH14, _, _}, {MH13_1, _, _}, {MH12_1, _, _}, {MH11_1, _, _} | _]
 		= wait_until_height(13),

@@ -358,7 +358,7 @@ handle_info({event, miner, {found_solution, Args}}, State) ->
 			}, PrevB),
 			SignedH = ar_block:generate_signed_hash(UnsignedB),
 			Signature = ar_wallet:sign(RewardKey, SignedH),
-			H = ar_block:indep_hash(SignedH, Signature),
+			H = ar_block:indep_hash2(SignedH, Signature),
 			B = UnsignedB#block{ indep_hash = H, signature = Signature },
 			ar_watchdog:mined_block(H, Height),
 			?LOG_INFO([{event, mined_block}, {indep_hash, ar_util:encode(H)},

@@ -119,10 +119,10 @@ read_block({H, _, _}) ->
 	read_block(H);
 read_block(BH) ->
 	case ar_disk_cache:lookup_block_filename(BH) of
-		{ok, Filename} ->
+		{ok, {Filename, Encoding}} ->
 			%% The cache keeps a rotated number of recent headers when the
 			%% node is out of disk space.
-			read_block_from_file(Filename);
+			read_block_from_file(Filename, Encoding);
 		_ ->
 			case catch ets:lookup(?MODULE, block_db) of
 				[{_, DB}] ->
@@ -131,8 +131,8 @@ read_block(BH) ->
 							case lookup_block_filename(BH) of
 								unavailable ->
 									unavailable;
-								Filename ->
-									read_block_from_file(Filename)
+								{Filename, Encoding} ->
+									read_block_from_file(Filename, Encoding)
 							end;
 						{ok, V} ->
 							migrate_block_record(binary_to_term(V));
@@ -163,16 +163,20 @@ get_free_space(Dir) ->
 
 lookup_block_filename(H) ->
 	{ok, Config} = application:get_env(arweave, config),
-	Name = filename:join([
-		Config#config.data_dir,
-		?BLOCK_DIR,
-		binary_to_list(ar_util:encode(H)) ++ ".json"
-	]),
-	case is_file(Name) of
+	Name = filename:join([Config#config.data_dir, ?BLOCK_DIR,
+			binary_to_list(ar_util:encode(H))]),
+	NameJSON = iolist_to_binary([Name, ".json"]),
+	case is_file(NameJSON) of
 		true ->
-			Name;
+			{NameJSON, json};
 		false ->
-			unavailable
+			NameBin = iolist_to_binary([Name, ".bin"]),
+			case is_file(NameBin) of
+				true ->
+					{NameBin, binary};
+				false ->
+					unavailable
+			end
 	end.
 
 delete_wallet_list(RootHash) ->
@@ -671,6 +675,8 @@ get_wallet_list_range(Tree, Cursor) ->
 	end.
 
 %% @doc Read a given wallet list (by hash) from the disk.
+read_wallet_list(<<>>) ->
+	{ok, ar_patricia_tree:new()};
 read_wallet_list(WalletListHash) when is_binary(WalletListHash) ->
 	case read_wallet_list_chunk(WalletListHash) of
 		not_found ->
@@ -846,10 +852,15 @@ write_full_block2(BShadow, TXs) ->
 			Error
 	end.
 
-read_block_from_file(Filename) ->
+read_block_from_file(Filename, Encoding) ->
 	case read_file_raw(Filename) of
-		{ok, JSON} ->
-			parse_block_json(JSON);
+		{ok, Bin} ->
+			case Encoding of
+				json ->
+					parse_block_json(Bin);
+				binary ->
+					parse_block_binary(Bin)
+			end;
 		{error, Reason} ->
 			?LOG_WARNING([{event, error_reading_block},
 					{error, io_lib:format("~p", [Reason])}]),
@@ -869,6 +880,16 @@ parse_block_json(JSON) ->
 			end;
 		Error ->
 			?LOG_WARNING([{event, error_parsing_block_json},
+					{error, io_lib:format("~p", [Error])}]),
+			unavailable
+	end.
+
+parse_block_binary(Bin) ->
+	case catch ar_serialize:binary_to_block(Bin) of
+		{ok, B} ->
+			B;
+		Error ->
+			?LOG_WARNING([{event, error_parsing_block_bin},
 					{error, io_lib:format("~p", [Error])}]),
 			unavailable
 	end.
@@ -1050,16 +1071,9 @@ store_and_retrieve_block_test_() ->
 test_store_and_retrieve_block() ->
 	[B0] = ar_weave:init([]),
 	ar_test_node:start(B0),
-	?assertEqual(
-		B0#block{
-			hash_list = unset,
-			size_tagged_txs = unset
-		}, read_block(B0#block.indep_hash)),
-	?assertEqual(
-		B0#block{ hash_list = unset, size_tagged_txs = unset },
-		read_block(B0#block.height, [{B0#block.indep_hash, B0#block.weave_size,
-				B0#block.tx_root}])
-	),
+	?assertEqual(B0#block{ size_tagged_txs = unset }, read_block(B0#block.indep_hash)),
+	?assertEqual(B0#block{ size_tagged_txs = unset }, read_block(B0#block.height,
+			[{B0#block.indep_hash, B0#block.weave_size, B0#block.tx_root}])),
 	ar_node:mine(),
 	ar_test_node:wait_until_height(1),
 	ar_node:mine(),

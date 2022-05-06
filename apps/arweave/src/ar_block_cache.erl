@@ -408,6 +408,14 @@ block_cache_test() ->
 	%% became the tip so we should not reorganize.
 	?assertEqual(not_found, get_earliest_not_validated_from_longest_chain(bcache_test)),
 	add(bcache_test, B14 = on_top(random_block_after_repacking(2), B13)),
+	case ar_block:is_2_6_repacking_complete(B14) of
+		true ->
+			test_block_cache_after_2_6_repacking(B13, B14);
+		false ->
+			ok
+	end.
+
+test_block_cache_after_2_6_repacking(B13, B14) ->
 	?assertMatch({B14, [B13], {{not_validated, awaiting_nonce_limiter_validation}, _}},
 			get_earliest_not_validated_from_longest_chain(bcache_test)),
 	mark_nonce_limiter_validated(bcache_test, crypto:strong_rand_bytes(32)),

@@ -111,9 +111,8 @@ write_genesis_files(DataDir, B0, WalletList) ->
 	BH = B0#block.indep_hash,
 	BlockDir = filename:join(DataDir, ?BLOCK_DIR),
 	ok = filelib:ensure_dir(BlockDir ++ "/"),
-	BlockFilepath = filename:join(BlockDir, binary_to_list(ar_util:encode(BH)) ++ ".json"),
-	BlockJSON = ar_serialize:jsonify(ar_serialize:block_to_json_struct(B0)),
-	ok = file:write_file(BlockFilepath, BlockJSON),
+	BlockFilepath = filename:join(BlockDir, binary_to_list(ar_util:encode(BH)) ++ ".bin"),
+	ok = file:write_file(BlockFilepath, ar_serialize:block_to_binary(B0)),
 	TXDir = filename:join(DataDir, ?TX_DIR),
 	ok = filelib:ensure_dir(TXDir ++ "/"),
 	lists:foreach(

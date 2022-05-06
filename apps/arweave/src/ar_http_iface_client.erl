@@ -6,13 +6,13 @@
 
 -export([send_block_json/3, send_block_binary/3, send_block_binary/4, send_tx_json/3,
 		send_tx_binary/3, send_block_announcement/2,
-		get_block_shadow/2, get_tx/3, get_txs/3, get_tx_from_remote_peer/2,
-		get_tx_data/2,
-		get_wallet_list_chunk/2, get_wallet_list_chunk/3, get_wallet_list/2,
+		get_block_shadow/2, get_block/3, get_tx/3, get_txs/3, get_tx_from_remote_peer/2,
+		get_tx_data/2, get_wallet_list_chunk/2, get_wallet_list_chunk/3, get_wallet_list/2,
 		add_peer/1, get_info/1, get_info/2,
 		get_peers/1, get_time/2, get_height/1, get_block_index/1, get_block_index/2,
 		get_sync_record/1, get_sync_record/3, get_chunk_json/3, get_chunk_binary/3,
-		get_mempool/1, get_sync_buckets/1, get_recent_hash_list/1]).
+		get_mempool/1, get_sync_buckets/1, get_recent_hash_list/1,
+		get_recent_hash_list_diff/1]).
 
 -include_lib("arweave/include/ar.hrl").
 -include_lib("arweave/include/ar_config.hrl").
@@ -97,6 +97,26 @@ add_peer(Peer) ->
 		timeout => 3 * 1000
 	}).
 
+%% @doc Retrieve a block. We request the peer to include complete
+%% transactions at the given positions (in the sorted transaction list).
+get_block(Peer, H, TXIndices) ->
+	case handle_block_response(Peer, binary,
+			ar_http:req(#{
+				method => get,
+				peer => Peer,
+				path => "/block2/hash/" ++ binary_to_list(ar_util:encode(H)),
+				headers => p2p_headers(),
+				connect_timeout => 500,
+				timeout => 15 * 1000,
+				body => ar_util:encode_list_indices(TXIndices),
+				limit => ?MAX_BODY_SIZE
+			})) of
+		not_found ->
+			not_found;
+		{ok, B, Time, Size} ->
+			{B, Time, Size}
+	end.
+
 %% @doc Retreive a block shadow by hash or height from remote peers.
 get_block_shadow([], _ID) ->
 	unavailable;
@@ -104,7 +124,7 @@ get_block_shadow(Peers, ID) ->
 	Peer = lists:nth(rand:uniform(min(5, length(Peers))), Peers),
 	Release = ar_peers:get_peer_release(Peer),
 	Encoding = case Release >= 42 of true -> binary; _ -> json end,
-	case handle_block_response(Peer, Peers, Encoding,
+	case handle_block_response(Peer, Encoding,
 			ar_http:req(#{
 				method => get,
 				peer => Peer,
@@ -385,6 +405,21 @@ get_recent_hash_list(Peer) ->
 		headers => p2p_headers()
 	})).
 
+get_recent_hash_list_diff(Peer) ->
+	[{_, HL}] = ets:lookup(node_state, block_anchors),
+	ReverseHL = lists:reverse(HL),
+	handle_get_recent_hash_list_diff_response(ar_http:req(#{
+		peer => Peer,
+		method => get,
+		path => "/recent_hash_list_diff",
+		timeout => 10 * 1000,
+		connect_timeout => 1000,
+		%%        PrevH H    Len        TXID
+		limit => (48 + (48 + 2 + 1000 * 32) * 49), % 1570498 bytes, very pessimistic case.
+		body => iolist_to_binary(ReverseHL),
+		headers => p2p_headers()
+	}), HL, Peer).
+
 handle_sync_record_response({ok, {{<<"200">>, _}, _, Body, _, _}}) ->
 	ar_intervals:safe_from_etf(Body);
 handle_sync_record_response(Reply) ->
@@ -517,6 +552,26 @@ handle_get_recent_hash_list_response({ok, {{<<"400">>, _}, _,
 handle_get_recent_hash_list_response(Response) ->
 	{error, Response}.
 
+handle_get_recent_hash_list_diff_response({ok, {{<<"200">>, _}, _, Body, _, _}}, HL, Peer) ->
+	case parse_recent_hash_list_diff(Body, HL) of
+		{error, invalid_input} ->
+			ar_events:send(peer, {bad_response, {Peer, recent_hash_list_diff, invalid_input}}),
+			{error, invalid_input};
+		{error, unknown_base} ->
+			ar_events:send(peer, {bad_response, {Peer, recent_hash_list_diff, unknown_base}}),
+			{error, unknown_base};
+		{ok, Reply} ->
+			{ok, Reply}
+	end;
+handle_get_recent_hash_list_diff_response({ok, {{<<"404">>, _}, _,
+		_, _, _}}, _HL, _Peer) ->
+	{error, not_found};
+handle_get_recent_hash_list_diff_response({ok, {{<<"400">>, _}, _,
+		<<"Request type not found.">>, _, _}}, _HL, _Peer) ->
+	{error, request_type_not_found};
+handle_get_recent_hash_list_diff_response(Response, _HL, _Peer) ->
+	{error, Response}.
+
 decode_hash_list(HL) ->
 	decode_hash_list(HL, []).
 
@@ -529,6 +584,34 @@ decode_hash_list([H | HL], DecodedHL) ->
 	end;
 decode_hash_list([], DecodedHL) ->
 	{ok, lists:reverse(DecodedHL)}.
+
+parse_recent_hash_list_diff(<< PrevH:48/binary, Rest/binary >>, HL) ->
+	case lists:member(PrevH, HL) of
+		true ->
+			parse_recent_hash_list_diff(Rest);
+		false ->
+			{error, unknown_base}
+	end;
+parse_recent_hash_list_diff(_Input, _HL) ->
+	{error, invalid_input}.
+
+parse_recent_hash_list_diff(<<>>) ->
+	{ok, in_sync};
+parse_recent_hash_list_diff(<< H:48/binary, Len:16, TXIDs:(32 * Len)/binary, Rest/binary >>)
+		when Len =< ?BLOCK_TX_COUNT_LIMIT ->
+	case ar_block_cache:get(block_cache, H) of
+		not_found ->
+			{ok, {H, parse_txids(TXIDs)}};
+		_ ->
+			parse_recent_hash_list_diff(Rest)
+	end;
+parse_recent_hash_list_diff(_Input) ->
+	{error, invalid_input}.
+
+parse_txids(<< TXID:32/binary, Rest/binary >>) ->
+	[TXID | parse_txids(Rest)];
+parse_txids(<<>>) ->
+	[].
 
 %% @doc Return the current height of a remote node.
 get_height(Peer) ->
@@ -766,12 +849,11 @@ process_get_info(Props) ->
 	end.
 
 %% @doc Process the response of an /block call.
-handle_block_response(_Peer, _Peers, _Encoding, {ok, {{<<"400">>, _}, _, _, _, _}}) ->
+handle_block_response(_Peer, _Encoding, {ok, {{<<"400">>, _}, _, _, _, _}}) ->
 	not_found;
-handle_block_response(_Peer, _Peers, _Encoding, {ok, {{<<"404">>, _}, _, _, _, _}}) ->
+handle_block_response(_Peer, _Encoding, {ok, {{<<"404">>, _}, _, _, _, _}}) ->
 	not_found;
-handle_block_response(Peer, _Peers, Encoding,
-		{ok, {{<<"200">>, _}, _, Body, Start, End}}) ->
+handle_block_response(Peer, Encoding, {ok, {{<<"200">>, _}, _, Body, Start, End}}) ->
 	DecodeFun = case Encoding of json ->
 			fun(Input) ->
 				ar_serialize:json_struct_to_block(ar_serialize:dejsonify(Input))
@@ -794,7 +876,7 @@ handle_block_response(Peer, _Peers, Encoding,
 			ar_events:send(peer, {bad_response, {Peer, block, Error}}),
 			not_found
 	end;
-handle_block_response(Peer, _Peers, _Encoding, Response) ->
+handle_block_response(Peer, _Encoding, Response) ->
 	ar_events:send(peer, {bad_response, {Peer, block, Response}}),
 	not_found.
 

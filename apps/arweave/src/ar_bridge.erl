@@ -229,7 +229,7 @@ send_to_worker(Peer, {JSON, B}, W) ->
 							PoA2 = case MissingChunk2 of false -> #poa{};
 									_ -> B#block.poa2 end,
 							Bin = ar_serialize:block_to_binary(B#block{ txs = TXs2,
-									poa = PoA, poa2 = PoA }),
+									poa = PoA, poa2 = PoA2 }),
 							ar_http_iface_client:send_block_binary(Peer, H, Bin)
 					end
 				end,

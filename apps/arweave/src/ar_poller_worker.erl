@@ -40,20 +40,31 @@ handle_cast(poll, #state{ peer = undefined } = State) ->
 	ar_util:cast_after(1000, self(), poll),
 	{noreply, State};
 handle_cast(poll, #state{ peer = Peer, polling_frequency_ms = FrequencyMs } = State) ->
-	case ar_http_iface_client:get_recent_hash_list(Peer) of
-		{ok, HL} ->
-			case get_earliest_unknown_block(HL, not_set) of
-				match ->
+	case ar_http_iface_client:get_recent_hash_list_diff(Peer) of
+		{ok, in_sync} ->
+			ar_util:cast_after(FrequencyMs, self(), poll),
+			{noreply, State};
+		{ok, {H, TXIDs}} ->
+			case ar_ignore_registry:member(H) of
+				true ->
 					ok;
-				not_found ->
-					?LOG_WARNING([{event, peer_stuck_or_deviated},
-							{peer, ar_util:format_peer(Peer)},
-							{base_h, ar_util:encode(lists:last(HL))}]);
-				H ->
-					case ar_http_iface_client:get_block_shadow([Peer], H) of
-						{Peer, B, Time, Size} ->
-							ar_events:send(block, {discovered, Peer, B, Time, Size});
-						_ ->
+				false ->
+					Indices = get_missing_tx_indices(TXIDs),
+					case ar_http_iface_client:get_block(Peer, H, Indices) of
+						{B, Time, Size} ->
+							case collect_missing_transactions(B#block.txs) of
+								{ok, TXs} ->
+									B2 = B#block{ txs = TXs },
+									ar_events:send(block, {discovered, Peer, B2, Time, Size}),
+									ok;
+								failed ->
+									ok
+							end;
+						Error ->
+							?LOG_DEBUG([{event, failed_to_fetch_block},
+									{peer, ar_util:format_peer(Peer)},
+									{block, ar_util:encode(H)},
+									{error, io_lib:format("~p", [Error])}]),
 							ok
 					end
 			end,
@@ -61,8 +72,11 @@ handle_cast(poll, #state{ peer = Peer, polling_frequency_ms = FrequencyMs } = St
 			{noreply, State};
 		{error, request_type_not_found} ->
 			{noreply, State#state{ pause = true }};
+		{error, not_found} ->
+			?LOG_WARNING([{event, peer_stuck_or_deviated}, {peer, ar_util:format_peer(Peer)}]),
+			{noreply, State#state{ pause = true }};
 		Error ->
-			?LOG_DEBUG([{event, failed_to_fetch_block},
+			?LOG_DEBUG([{event, failed_to_fetch_recent_hash_list_diff},
 					{peer, ar_util:format_peer(Peer)}, {error, io_lib:format("~p", [Error])}]),
 			{noreply, State#state{ pause = true }}
 	end;
@@ -105,18 +119,32 @@ terminate(_Reason, _State) ->
 %%% Private functions.
 %%%===================================================================
 
-get_earliest_unknown_block([H | HL], PrevH) ->
-	case ar_block_cache:get(block_cache, H) of
-		not_found ->
-			get_earliest_unknown_block(HL, H);
-		#block{} ->
-			case PrevH of
-				not_set ->
-					%% We already have all peer's recent blocks in the cache.
-					match;
-				_ ->
-					PrevH
-			end
+get_missing_tx_indices(TXIDs) ->
+	get_missing_tx_indices(TXIDs, 0).
+
+get_missing_tx_indices([], _N) ->
+	[];
+get_missing_tx_indices([TXID | TXIDs], N) ->
+	case ets:member(node_state, {tx, TXID}) of
+		true ->
+			get_missing_tx_indices(TXIDs, N + 1);
+		false ->
+			[N | get_missing_tx_indices(TXIDs, N + 1)]
+	end.
+
+collect_missing_transactions([#tx{} = TX | TXs]) ->
+	case collect_missing_transactions(TXs) of
+		failed ->
+			failed;
+		{ok, TXs2} ->
+			{ok, [TX | TXs2]}
 	end;
-get_earliest_unknown_block([], _) ->
-	not_found.
+collect_missing_transactions([TXID | TXs]) ->
+	case ets:lookup(node_state, {tx, TXID}) of
+		[] ->
+			failed;
+		[{_, TX}] ->
+			collect_missing_transactions([TX | TXs])
+	end;
+collect_missing_transactions([]) ->
+	{ok, []}.

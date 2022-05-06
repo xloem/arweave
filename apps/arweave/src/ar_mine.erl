@@ -417,23 +417,6 @@ update_data_segment(State, Timestamp, Diff) ->
 			Diff,
 			Height
 		),
-	{DurationMicros, BDS2} =
-		timer:tc(
-			fun() ->
-				ar_block:generate_block_data_segment(
-					BDSBase,
-					CandidateB#block.hash_list_merkle,
-					#{
-						timestamp => Timestamp,
-						last_retarget => LastRetarget2,
-						diff => Diff,
-						cumulative_diff => CDiff,
-						reward_pool => CandidateB#block.reward_pool,
-						wallet_list => CandidateB#block.wallet_list
-					}
-				)
-			end
-		),
 	CandidateB2 =
 		CandidateB#block{
 			timestamp = Timestamp,
@@ -441,6 +424,8 @@ update_data_segment(State, Timestamp, Diff) ->
 			diff = Diff,
 			cumulative_diff = CDiff
 		},
+	{DurationMicros, BDS2} =
+			timer:tc(fun() -> ar_block:generate_block_data_segment(BDSBase, CandidateB2) end),
 	BlocksByTimestamp2 =
 		maps:filter(
 			fun(T, _) ->
@@ -609,7 +594,7 @@ server(
 											recall_byte = RecallByte
 										},
 									stop_miners(S),
-									process_spora_solution(BDS, B2, MinedTXs, S);
+									process_spora_solution(B2, MinedTXs, S);
 								_ ->
 									?LOG_ERROR([
 										{event, miner_produced_invalid_spora},
@@ -874,10 +859,9 @@ log_spora_performance() ->
 			" the round lasted ~B seconds.~n",
 			[trunc(Rate), trunc(RecallByteRate), trunc(ReadRate), Time div 1000000]).
 
-process_spora_solution(BDS, B, MinedTXs, S) ->
+process_spora_solution(B, MinedTXs, S) ->
 	#state{ current_block = #block{ indep_hash = CurrentBH } } = S,
-	SPoA = B#block.poa,
-	IndepHash = ar_block:indep_hash(BDS, B#block.hash, B#block.nonce, SPoA),
+	IndepHash = ar_block:indep_hash(B),
 	B2 = B#block{ indep_hash = IndepHash },
 	ar_events:send(block, {mined, B2, MinedTXs, CurrentBH}),
 	log_spora_performance().
@@ -952,7 +936,7 @@ spora_solution_hash(PrevH, Timestamp, H0, Chunk, Height) ->
 			{crypto:hash(sha256, << PrevH/binary, Preimage/binary >>), Preimage};
 		false ->
 			{ar_randomx_state:hash(Height, << H0/binary, PrevH/binary,
-					Timestamp:(?TIMESTAMP_FIELD_SIZE_LIMIT * 8), Chunk/binary >>), undefined}
+					Timestamp:(?TIMESTAMP_FIELD_SIZE_LIMIT * 8), Chunk/binary >>), <<>>}
 	end.
 
 spora_solution_hash_with_entropy(PrevH, Timestamp, H0, Chunk, Entropy, Height) ->
@@ -965,7 +949,7 @@ spora_solution_hash_with_entropy(PrevH, Timestamp, H0, Chunk, Entropy, Height) -
 		false ->
 			{ar_randomx_state:hash(Height, << H0/binary, PrevH/binary,
 					Timestamp:(?TIMESTAMP_FIELD_SIZE_LIMIT * 8), Chunk/binary,
-					Entropy/binary >>), undefined}
+					Entropy/binary >>), <<>>}
 	end.
 
 -ifdef(DEBUG).

@@ -13,7 +13,7 @@ end).
 		[<<"chunk">> | _]					-> {chunk,					12000}; % ~50 MB/s.
 		[<<"chunk2">> | _]					-> {chunk,					12000}; % ~50 MB/s.
 		[<<"data_sync_record">> | _]		-> {data_sync_record,		400};
-		[<<"recent_hash_list_diff">> | _]	-> {recent_hash_list_diff,	60};
+		[<<"recent_hash_list_diff">> | _]	-> {recent_hash_list_diff,	120};
 		_									-> {default,				DefaultPathLimit}
 	end
 end).

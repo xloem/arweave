@@ -33,56 +33,50 @@ init(WalletList, StartingDiff, RewardPool) ->
 init(WalletList, StartingDiff, RewardPool, TXs) ->
 	WL = ar_patricia_tree:from_proplist([{A, {B, LTX}} || {A, B, LTX} <- WalletList]),
 	WLH = element(1, ar_block:hash_wallet_list(0, unclaimed, WL)),
-	ok = ar_storage:write_wallet_list(WLH, WL),
+	case WalletList of
+		[] ->
+			ok;
+		_ ->
+			ok = ar_storage:write_wallet_list(WLH, WL)
+	end,
 	SizeTaggedTXs = ar_block:generate_size_tagged_list_from_txs(TXs, 0),
 	BlockSize = case SizeTaggedTXs of [] -> 0; _ -> element(2, lists:last(SizeTaggedTXs)) end,
 	SizeTaggedDataRoots = [{Root, Offset} || {{_, Root}, Offset} <- SizeTaggedTXs],
 	{TXRoot, _Tree} = ar_merkle:generate_tree(SizeTaggedDataRoots),
-	RewardAddr =
-		case ar_fork:height_2_6() > 0 of
-			true ->
-				unclaimed;
-			false ->
-				ar_wallet:to_address(ar_wallet:new_keyfile({ecdsa, secp256k1}))
-		end,
+	Timestamp = os:system_time(second),
 	B0 =
 		#block{
-			height = 0,
-			hash = crypto:strong_rand_bytes(32),
-			nonce = <<>>,
-			previous_block = <<>>,
-			hash_list_merkle = <<>>,
-			reward_addr = RewardAddr,
 			txs = TXs,
 			tx_root = TXRoot,
 			wallet_list = WLH,
-			hash_list = [],
-			tags = [],
 			diff = StartingDiff,
 			cumulative_diff = ar_difficulty:next_cumulative_diff(0, StartingDiff, 0),
 			weave_size = BlockSize,
 			block_size = BlockSize,
 			reward_pool = RewardPool,
-			timestamp = os:system_time(seconds),
-			poa = #poa{},
-			size_tagged_txs = SizeTaggedTXs
+			timestamp = Timestamp,
+			last_retarget = Timestamp,
+			size_tagged_txs = SizeTaggedTXs,
+			usd_to_ar_rate = ?NEW_WEAVE_USD_TO_AR_RATE,
+			scheduled_usd_to_ar_rate = ?NEW_WEAVE_USD_TO_AR_RATE,
+			packing_2_5_threshold = 0,
+			strict_data_split_threshold = BlockSize
 		},
 	B1 =
-		case ar_fork:height_2_5() > 0 of
+		case ar_fork:height_2_6() > 0 of
 			true ->
 				B0;
 			false ->
-				B0#block{
-					usd_to_ar_rate = ?NEW_WEAVE_USD_TO_AR_RATE,
-					scheduled_usd_to_ar_rate = ?NEW_WEAVE_USD_TO_AR_RATE,
-					packing_2_5_threshold = 0,
-					packing_2_6_threshold = 0,
-					strict_data_split_threshold = 0
-				}
+				B0#block{ packing_2_6_threshold = BlockSize }
 		end,
-	B2 = B1#block { last_retarget = B1#block.timestamp },
-	B3 = B2#block { indep_hash = ar_block:indep_hash(B2) },
-	[B3].
+	B2 =
+		case ar_block:is_2_6_repacking_complete(B1) of
+			true ->
+				B1#block{ nonce = 0 };
+			false ->
+				B1#block{ nonce = <<>> }
+		end,
+	[B2#block{ indep_hash = ar_block:indep_hash(B2) }].
 
 read_v1_genesis_txs() ->
 	{ok, Files} = file:list_dir("data/genesis_txs"),

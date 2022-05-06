@@ -24,7 +24,8 @@
 -define(HUGE_WEAVE_SIZE, 1000000000000000).
 
 updates_pool_and_assigns_rewards_correctly_before_burden_test_() ->
-	{timeout, 30, fun updates_pool_and_assigns_rewards_correctly_before_burden/0}.
+	test_on_fork(height_2_6, 0,
+			fun updates_pool_and_assigns_rewards_correctly_before_burden/0).
 
 updates_pool_and_assigns_rewards_correctly_after_burden_test_() ->
 	%% Bigger burden is achieved by mocking `ar_pricing:get_miner_reward_and_endowment_pool/1`
@@ -34,7 +35,8 @@ updates_pool_and_assigns_rewards_correctly_after_burden_test_() ->
 	test_with_mocked_functions(
 		[
 			{ar_pricing, get_miner_reward_and_endowment_pool,
-				fun ar_pricing_tests:get_miner_reward_and_endowment_pool/1}
+				fun ar_pricing_tests:get_miner_reward_and_endowment_pool/1},
+			{ar_fork, height_2_6, fun() -> 0 end}
 		],
 		fun updates_pool_and_assigns_rewards_correctly_after_burden/0
 	).

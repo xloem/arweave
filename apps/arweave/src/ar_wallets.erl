@@ -4,25 +4,10 @@
 %%% following, and uncle blocks.
 -module(ar_wallets).
 
--export([
-	start_link/1,
-	get/1,
-	get/2,
-	get_chunk/2,
-	get_balance/1, get_balance/2,
-	get_last_tx/1,
-	apply_block/5,
-	add_wallets/4,
-	update_wallets/4,
-	set_current/5
-]).
+-export([start_link/1, get/1, get/2, get_chunk/2, get_balance/1, get_balance/2, get_last_tx/1,
+		apply_block/5, add_wallets/4, update_wallets/4, set_current/5]).
 
--export([
-	init/1,
-	handle_call/3,
-	handle_cast/2,
-	terminate/2
-]).
+-export([init/1, handle_call/3, handle_cast/2, terminate/2]).
 
 -include_lib("arweave/include/ar.hrl").
 -include_lib("arweave/include/ar_header_sync.hrl").
@@ -76,7 +61,8 @@ get_last_tx(Address) ->
 %% and height. Return the root hash of the new wallet tree.
 %% @end
 apply_block(NewB, RootHash, RewardPool, Rate, Height) ->
-	gen_server:call(?MODULE, {apply_block, NewB, RootHash, RewardPool, Rate, Height}, infinity).
+	gen_server:call(?MODULE, {apply_block, NewB, RootHash, RewardPool, Rate, Height},
+			infinity).
 
 %% @doc Cache the wallets to be upserted into the tree with the given root hash. Return
 %% the root hash of the new wallet tree.
@@ -88,7 +74,8 @@ add_wallets(RootHash, Wallets, RewardAddr, Height) ->
 %% the given root hash from cache. Return the root hash of the updated wallet tree.
 %% @end
 update_wallets(RootHash, Wallets, RewardAddr, Height) ->
-	gen_server:call(?MODULE, {update_wallets, RootHash, Wallets, RewardAddr, Height}, infinity).
+	gen_server:call(?MODULE, {update_wallets, RootHash, Wallets, RewardAddr, Height},
+			infinity).
 
 %% @doc Make the wallet tree with the given root hash "the current tree". The current tree
 %% is used by get/1, get_balance/1, and get_last_tx/1.
@@ -204,7 +191,7 @@ handle_call({update_wallets, RootHash, Wallets, RewardAddr, Height}, _From, DAG)
 			{reply, {ok, UpdatedRootHash}, UpdatedDAG}
 	end;
 
-handle_call({set_current, PrevRootHash, RootHash, RewardAddr, Height, PruneDepth}, _From, DAG) ->
+handle_call({set_current, PrevRootHash, RootHash, RewardAddr, Height, PruneDepth}, _, DAG) ->
 	{reply, ok, set_current(DAG, PrevRootHash, RootHash, RewardAddr, Height, PruneDepth)}.
 
 handle_cast({write_wallet_list_chunk, RootHash, Cursor, Position}, DAG) ->
