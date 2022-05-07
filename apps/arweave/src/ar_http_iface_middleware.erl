@@ -1945,6 +1945,8 @@ get_recent_hash_list_diff([{H, SizeTaggedTXs} | BlockTXPairs]) ->
 get_recent_hash_list_diff([]) ->
 	<<>>.
 
+get_txids_from_size_tagged_txs([{{padding, _}, _} | SizeTaggedTXs]) ->
+	get_txids_from_size_tagged_txs(SizeTaggedTXs);
 get_txids_from_size_tagged_txs([{{TXID, _}, _} | SizeTaggedTXs]) ->
 	{N, L} = get_txids_from_size_tagged_txs(SizeTaggedTXs),
 	{N + 1, [TXID | L]};

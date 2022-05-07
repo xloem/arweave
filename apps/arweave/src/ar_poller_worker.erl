@@ -73,7 +73,7 @@ handle_cast(poll, #state{ peer = Peer, polling_frequency_ms = FrequencyMs } = St
 		{error, request_type_not_found} ->
 			{noreply, State#state{ pause = true }};
 		{error, not_found} ->
-			?LOG_WARNING([{event, peer_stuck_or_deviated}, {peer, ar_util:format_peer(Peer)}]),
+			?LOG_WARNING([{event, peer_behind_or_deviated}, {peer, ar_util:format_peer(Peer)}]),
 			{noreply, State#state{ pause = true }};
 		Error ->
 			?LOG_DEBUG([{event, failed_to_fetch_recent_hash_list_diff},

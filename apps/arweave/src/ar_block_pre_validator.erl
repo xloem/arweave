@@ -245,6 +245,7 @@ pre_validate_last_retarget(B, BDS, PrevB, Peer, Timestamp, ReadBodyTime, BodySiz
 					pre_validate_difficulty(B, BDS, PrevB, Peer, Timestamp, ReadBodyTime,
 									BodySize);
 				false ->
+					post_block_reject_warn(B, check_last_retarget, Peer),
 					ar_blacklist_middleware:ban_peer(Peer, ?BAD_BLOCK_BAN_TIME),
 					ar_events:send(block, {rejected, invalid_last_retarget,
 							B#block.indep_hash, Peer}),
@@ -256,7 +257,7 @@ pre_validate_difficulty(B, BDS, PrevB, Peer, Timestamp, ReadBodyTime, BodySize) 
 	ExpectedDiff =
 		case B#block.height >= ar_fork:height_2_6() of
 			true ->
-				ar_retarget:maybe_retarget(PrevB#block.height, PrevB#block.diff,
+				ar_retarget:maybe_retarget(B#block.height, PrevB#block.diff,
 						B#block.timestamp, PrevB#block.last_retarget, PrevB#block.timestamp);
 			false ->
 				ar_mine:min_difficulty(B#block.height)
@@ -272,6 +273,7 @@ pre_validate_difficulty(B, BDS, PrevB, Peer, Timestamp, ReadBodyTime, BodySize) 
 							ReadBodyTime, BodySize)
 			end;
 		_ ->
+			post_block_reject_warn(B, check_difficulty, Peer),
 			ar_blacklist_middleware:ban_peer(Peer, ?BAD_BLOCK_BAN_TIME),
 			ar_events:send(block, {rejected, invalid_difficulty, B#block.indep_hash, Peer}),
 			ok
@@ -293,9 +295,9 @@ pre_validate_quick_pow(B, BDS, PrevB, Peer, Timestamp, ReadBodyTime, BodySize) -
 		end,
 	case binary:decode_unsigned(SolutionHash, big) > Diff of
 		false ->
+			post_block_reject_warn(B, check_hash_preimage, Peer),
 			ar_blacklist_middleware:ban_peer(Peer, ?BAD_BLOCK_BAN_TIME),
-			ar_events:send(block, {rejected, invalid_hash_preimage, B#block.indep_hash,
-					Peer}),
+			ar_events:send(block, {rejected, invalid_hash_preimage, B#block.indep_hash, Peer}),
 			ok;
 		true ->
 			gen_server:cast(?MODULE, {enqueue, {B, BDS, PrevB, Peer, Timestamp, ReadBodyTime,
@@ -324,6 +326,7 @@ pre_validate_search_space_number(B, PrevB, Peer, Timestamp, ReadBodyTime, BodySi
 			Max = max(0, SearchSpaceUpperBound div ?SEARCH_SPACE_SIZE - 1),
 			case B#block.search_space_number > Max of
 				true ->
+					post_block_reject_warn(B, check_search_space_number, Peer),
 					ar_blacklist_middleware:ban_peer(Peer, ?BAD_BLOCK_BAN_TIME),
 					ar_events:send(block, {rejected, invalid_search_space_number,
 							B#block.indep_hash, Peer}),
@@ -339,6 +342,7 @@ pre_validate_nonce(B, PrevB, SearchSpaceUpperBound, Peer, Timestamp, ReadBodyTim
 	Max = max(0, ?RECALL_SUBSPACE_SIZE div ?DATA_CHUNK_SIZE - 1),
 	case B#block.nonce > Max of
 		true ->
+			post_block_reject_warn(B, check_nonce, Peer),
 			ar_blacklist_middleware:ban_peer(Peer, ?BAD_BLOCK_BAN_TIME),
 			ar_events:send(block, {rejected, invalid_nonce, B#block.indep_hash, Peer}),
 			ok;

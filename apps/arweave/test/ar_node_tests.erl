@@ -122,8 +122,9 @@ multi_account_test_() ->
 					%% Pay 1 Winston for every transfer.
 					{ar_pricing, get_tx_fee, fun(_, _, _, _) -> 1 end},
 					%% Pay 1 extra Winston when transferring to a new address.
-					{ar_pricing, usd_to_ar, fun(_, _, _) -> 1 end}],
-				test_on_fork(height_2_6, 0, fun() -> test_multi_account(Case) end))
+					{ar_pricing, usd_to_ar, fun(_, _, _) -> 1 end},
+					{ar_fork, height_2_6, fun() -> 0 end}],
+				fun() -> test_multi_account(Case) end)
 		end,
 		[
 			{"RSA address mining.", gb_sets:from_list([{1, {master, {1, rsa}, []}}]),
@@ -450,7 +451,10 @@ ar_node_interface_test() ->
 	?assertEqual(1, ar_node:get_height()),
 	?assertEqual(H, ar_node:get_current_block_hash()).
 
-mining_reward_test() ->
+mining_reward_test_() ->
+	test_on_fork(height_2_6, 0, fun test_mining_reward/0).
+
+test_mining_reward() ->
 	{_Priv1, Pub1} = ar_wallet:new_keyfile({eddsa, ed25519}),
 	[B0] = ar_weave:init([]),
 	{_Node1, _} = start(B0, ar_wallet:to_address(Pub1)),
@@ -460,16 +464,17 @@ mining_reward_test() ->
 
 %% @doc Check that other nodes accept a new block and associated mining reward.
 multi_node_mining_reward_test_() ->
-	{timeout, 20, fun() ->
-		{_Priv1, Pub1} = slave_call(ar_wallet, new_keyfile, [{ecdsa, secp256k1}]),
-		[B0] = ar_weave:init([]),
-		start(B0),
-		slave_start(B0, ar_wallet:to_address(Pub1)),
-		connect_to_slave(),
-		slave_mine(),
-		wait_until_height(1),
-		?assert(ar_node:get_balance(Pub1) > 0)
-	end}.
+	test_on_fork(height_2_6, 0, fun test_multi_node_mining_reward/0).
+
+test_multi_node_mining_reward() ->
+	{_Priv1, Pub1} = slave_call(ar_wallet, new_keyfile, [{ecdsa, secp256k1}]),
+	[B0] = ar_weave:init([]),
+	start(B0),
+	slave_start(B0, ar_wallet:to_address(Pub1)),
+	connect_to_slave(),
+	slave_mine(),
+	wait_until_height(1),
+	?assert(ar_node:get_balance(Pub1) > 0).
 
 %% @doc Ensure that TX replay attack mitigation works.
 replay_attack_test_() ->
@@ -498,6 +503,9 @@ replay_attack_test_() ->
 %% @doc Create two new wallets and a blockweave with a wallet balance.
 %% Create and verify execution of a signed exchange of value tx.
 wallet_transaction_test_() ->
+	test_on_fork(height_2_6, 0, fun test_wallet_transaction/0).
+
+test_wallet_transaction() ->
 	TestWalletTransaction = fun(KeyType) ->
 		fun() ->
 			{Priv1, Pub1} = ar_wallet:new_keyfile(KeyType),
