@@ -14,7 +14,7 @@
 -import(ar_test_fork, [test_on_fork/3]).
 
 addresses_with_checksums_test_() ->
-	{timeout, 60, fun test_addresses_with_checksum/0}.
+	{timeout, 30, fun test_addresses_with_checksum/0}.
 
 test_addresses_with_checksum() ->
 	{_, Pub} = Wallet = ar_wallet:new(),
@@ -153,7 +153,10 @@ get_info_test() ->
 	?assertEqual(0, ar_http_iface_client:get_info({127, 0, 0, 1, 1984}, height)).
 
 %% @doc Ensure that transactions are only accepted once.
-single_regossip_test() ->
+single_regossip_test_() ->
+	{timeout, 10, fun test_single_regossip/0}.
+
+test_single_regossip() ->
 	start(no_block),
 	slave_start(no_block),
 	TX = ar_tx:new(),
@@ -917,11 +920,11 @@ test_get_tx_status() ->
 	),
 	%% Create a fork which returns the TX to mempool.
 	{_Slave, _} = slave_start(B0),
-	connect_to_slave(),
 	slave_mine(),
 	assert_slave_wait_until_height(1),
 	slave_mine(),
 	assert_slave_wait_until_height(2),
+	connect_to_slave(),
 	slave_mine(),
 	wait_until_height(3),
 	?assertMatch({ok, {{<<"202">>, _}, _, _, _, _}}, FetchStatus()).
@@ -1340,19 +1343,8 @@ test_send_block2() ->
 	?assertEqual({ok, #block_announcement_response{ missing_chunk = false,
 			missing_tx_indices = [] }},
 			ar_serialize:binary_to_block_announcement_response(Body5)),
-	{H0, _Entropy} = ar_mine:spora_h0_with_entropy(ar_block:generate_block_data_segment(B6),
-			B6#block.nonce, B6#block.height),
-	SearchSpaceUpperBound = ar_node:get_recent_search_space_upper_bound_by_prev_h(
-			B6#block.previous_block),
-	{ok, RecallByte} = ar_mine:pick_recall_byte(H0, B6#block.previous_block,
-			SearchSpaceUpperBound),
-	{ok, {{<<"419">>, _}, _, _, _, _}} = ar_http:req(#{ method => post,
-		peer => slave_peer(), path => "/block2",
-		headers => [{<<"arweave-recall-byte">>, integer_to_binary(1000000000000)}],
-		body => ar_serialize:block_to_binary(B6#block{ poa = #poa{} }) }),
 	{ok, {{<<"200">>, _}, _, <<"OK">>, _, _}} = ar_http:req(#{ method => post,
 		peer => slave_peer(), path => "/block2",
-		headers => [{<<"arweave-recall-byte">>, integer_to_binary(RecallByte)}],
 		body => ar_serialize:block_to_binary(B6#block{ poa = #poa{} }) }),
 	assert_slave_wait_until_height(3 + ?SEARCH_SPACE_UPPER_BOUND_DEPTH + 1).
 
