@@ -30,14 +30,31 @@ init([]) ->
 	process_flag(trap_exit, true),
 	{ok, Config} = application:get_env(arweave, config),
 	[ok] = ar_events:subscribe([node_state]),
+	case ar_node:is_joined() of
+		true ->
+			handle_node_state_initialized();
+		false ->
+			ok
+	end,
 	{ok, #state{ polling_frequency_ms = Config#config.polling * 1000 }}.
 
 handle_call(Request, _From, State) ->
 	?LOG_WARNING("event: unhandled_call, request: ~p", [Request]),
 	{reply, ok, State}.
 
+handle_cast(pause, State) ->
+	{noreply, State#state{ pause = true }};
+
+handle_cast(resume, #state{ pause = false } = State) ->
+	{noreply, State};
+handle_cast(resume, State) ->
+	gen_server:cast(self(), poll),
+	{noreply, State#state{ pause = false }};
+
 handle_cast(poll, #state{ peer = undefined } = State) ->
 	ar_util:cast_after(1000, self(), poll),
+	{noreply, State};
+handle_cast(poll, #state{ pause = true } = State) ->
 	{noreply, State};
 handle_cast(poll, #state{ peer = Peer, polling_frequency_ms = FrequencyMs } = State) ->
 	case ar_http_iface_client:get_recent_hash_list_diff(Peer) of
@@ -70,6 +87,8 @@ handle_cast(poll, #state{ peer = Peer, polling_frequency_ms = FrequencyMs } = St
 			end,
 			ar_util:cast_after(FrequencyMs, self(), poll),
 			{noreply, State};
+		{error, node_state_not_initialized} ->
+			{noreply, State};
 		{error, request_type_not_found} ->
 			{noreply, State#state{ pause = true }};
 		{error, not_found} ->
@@ -95,7 +114,7 @@ handle_cast(Msg, State) ->
 	{noreply, State}.
 
 handle_info({event, node_state, initialized}, State) ->
-	gen_server:cast(self(), poll),
+	handle_node_state_initialized(),
 	{noreply, State};
 
 handle_info({event, node_state, _}, State) ->
@@ -118,6 +137,9 @@ terminate(_Reason, _State) ->
 %%%===================================================================
 %%% Private functions.
 %%%===================================================================
+
+handle_node_state_initialized() ->
+	gen_server:cast(self(), poll).
 
 get_missing_tx_indices(TXIDs) ->
 	get_missing_tx_indices(TXIDs, 0).

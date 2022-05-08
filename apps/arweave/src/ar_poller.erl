@@ -13,7 +13,7 @@
 
 -behaviour(gen_server).
 
--export([start_link/2]).
+-export([start_link/2, pause/0, resume/0]).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
@@ -29,7 +29,8 @@
 
 -record(state, {
 	workers,
-	worker_count
+	worker_count,
+	pause = false
 }).
 
 %%%===================================================================
@@ -39,6 +40,14 @@
 start_link(Name, Workers) ->
 	gen_server:start_link({local, Name}, ?MODULE, Workers, []).
 
+%% @doc Put polling on pause.
+pause() ->
+	gen_server:cast(?MODULE, pause).
+
+%% @doc Resume paused polling.
+resume() ->
+	gen_server:cast(?MODULE, resume).
+
 %%%===================================================================
 %%% Generic server callbacks.
 %%%===================================================================
@@ -46,19 +55,37 @@ start_link(Name, Workers) ->
 init(Workers) ->
 	process_flag(trap_exit, true),
 	[ok, ok] = ar_events:subscribe([block, node_state]),
-	{ok, #state{ workers = queue:from_list(Workers),
-			worker_count = length(Workers) }}.
+	case ar_node:is_joined() of
+		true ->
+			handle_node_state_initialized();
+		false ->
+			ok
+	end,
+	{ok, #state{ workers = Workers, worker_count = length(Workers) }}.
 
 handle_call(Request, _From, State) ->
 	?LOG_WARNING("event: unhandled_call, request: ~p", [Request]),
 	{reply, ok, State}.
 
+handle_cast(pause, #state{ workers = Workers } = State) ->
+	[gen_server:cast(W, pause) || W <- Workers],
+	{noreply, State#state{ pause = true }};
+
+handle_cast(resume, #state{ pause = false } = State) ->
+	{noreply, State};
+handle_cast(resume, #state{ workers = Workers } = State) ->
+	[gen_server:cast(W, resume) || W <- Workers],
+	gen_server:cast(?MODULE, collect_peers),
+	{noreply, State#state{ pause = false }};
+
+handle_cast(collect_peers, #state{ pause = true } = State) ->
+	{noreply, State};
 handle_cast(collect_peers, State) ->
-	#state{ worker_count = N, workers = Q } = State,
+	#state{ worker_count = N, workers = Workers } = State,
 	TrustedPeers = lists:sublist(ar_peers:get_trusted_peers(), N div 3),
 	Peers = ar_peers:get_peers(),
 	PickedPeers = TrustedPeers ++ lists:sublist(Peers, N - length(TrustedPeers)),
-	start_polling_peers(Q, PickedPeers),
+	start_polling_peers(Workers, PickedPeers),
 	ar_util:cast_after(?COLLECT_PEERS_FREQUENCY_MS, ?MODULE, collect_peers),
 	{noreply, State};
 
@@ -73,7 +100,7 @@ handle_info({event, block, _}, State) ->
 	{noreply, State};
 
 handle_info({event, node_state, initialized}, State) ->
-	gen_server:cast(?MODULE, collect_peers),
+	handle_node_state_initialized(),
 	{noreply, State};
 
 handle_info({event, node_state, _}, State) ->
@@ -90,9 +117,11 @@ terminate(_Reason, _State) ->
 %%% Private functions.
 %%%===================================================================
 
-start_polling_peers(Q, [Peer | Peers]) ->
-	{{value, W}, Q2} = queue:out(Q),
+handle_node_state_initialized() ->
+	gen_server:cast(?MODULE, collect_peers).
+
+start_polling_peers([W | Workers], [Peer | Peers]) ->
 	gen_server:cast(W, {set_peer, Peer}),
-	start_polling_peers(Q2, Peers);
-start_polling_peers(_Q, []) ->
+	start_polling_peers(Workers, Peers);
+start_polling_peers(_Workers, []) ->
 	ok.

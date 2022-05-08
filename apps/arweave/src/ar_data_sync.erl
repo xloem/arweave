@@ -719,7 +719,7 @@ handle_cast({remove_tx_data, TXID, TXSize, End, Cursor}, State) ->
 					PaddedOffset = get_chunk_padded_offset(AbsoluteEndOffset,
 							StrictDataSplitThreshold),
 					case ar_sync_record:is_recorded(PaddedOffset, ?MODULE) of
-						{true, Packing} ->
+						{true, _Packing} ->
 							%% 1) store updated sync record
 							%% 2) remove chunk
 							%% 3) update chunks_index
@@ -729,7 +729,7 @@ handle_cast({remove_tx_data, TXID, TXSize, End, Cursor}, State) ->
 							%% and the chunk can still be removed upon retry.
 							ok = ar_sync_record:delete(PaddedOffset,
 									PaddedStartOffset, ?MODULE),
-							ok = ar_chunk_storage:delete(PaddedOffset, Packing),
+							ok = ar_chunk_storage:delete(PaddedOffset),
 							ok = ar_kv:delete(ChunksIndex, Key);
 						_ ->
 							ok

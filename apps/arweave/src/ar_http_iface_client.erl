@@ -406,19 +406,23 @@ get_recent_hash_list(Peer) ->
 	})).
 
 get_recent_hash_list_diff(Peer) ->
-	[{_, HL}] = ets:lookup(node_state, block_anchors),
-	ReverseHL = lists:reverse(HL),
-	handle_get_recent_hash_list_diff_response(ar_http:req(#{
-		peer => Peer,
-		method => get,
-		path => "/recent_hash_list_diff",
-		timeout => 10 * 1000,
-		connect_timeout => 1000,
-		%%        PrevH H    Len        TXID
-		limit => (48 + (48 + 2 + 1000 * 32) * 49), % 1570498 bytes, very pessimistic case.
-		body => iolist_to_binary(ReverseHL),
-		headers => p2p_headers()
-	}), HL, Peer).
+	case ets:lookup(node_state, block_anchors) of
+		[] ->
+			{error, node_state_not_initialized};
+		[{_, HL}] ->
+			ReverseHL = lists:reverse(HL),
+			handle_get_recent_hash_list_diff_response(ar_http:req(#{
+				peer => Peer,
+				method => get,
+				path => "/recent_hash_list_diff",
+				timeout => 10 * 1000,
+				connect_timeout => 1000,
+				%%        PrevH H    Len        TXID
+				limit => (48 + (48 + 2 + 1000 * 32) * 49), % 1570498 bytes, very pessimistic case.
+				body => iolist_to_binary(ReverseHL),
+				headers => p2p_headers()
+			}), HL, Peer)
+	end.
 
 handle_sync_record_response({ok, {{<<"200">>, _}, _, Body, _, _}}) ->
 	ar_intervals:safe_from_etf(Body);

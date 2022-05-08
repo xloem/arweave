@@ -138,12 +138,12 @@ init([]) ->
 
 load_mempool() ->
 	case ar_storage:read_term(mempool) of
-		{ok, {TXs, _MempoolSize}} ->
+		{ok, {SerializedTXs, _MempoolSize}} ->
+			TXs = maps:map(fun(_, {TX, St}) -> {deserialize_tx(TX), St} end, SerializedTXs),
 			Map =
 				maps:map(
 					fun(TXID, {TX, Status}) ->
-						ets:insert(node_state, {{tx, TXID},
-								ar_storage:migrate_tx_record(TX)}),
+						ets:insert(node_state, {{tx, TXID}, TX}),
 						ets:insert(tx_prefixes, {tx_id_prefix(TXID), TXID}),
 						Status
 					end,
@@ -151,7 +151,7 @@ load_mempool() ->
 				),
 			MempoolSize = maps:fold(
 				fun(_, {TX, _}, Acc) ->
-					increase_mempool_size(Acc, ar_storage:migrate_tx_record(TX))
+					increase_mempool_size(Acc, TX)
 				end,
 				{0, 0},
 				TXs
@@ -160,8 +160,7 @@ load_mempool() ->
 				maps:fold(
 					fun(TXID, {TX, Status}, Acc) ->
 						Timestamp = get_or_create_tx_timestamp(TXID),
-						TX2 = ar_storage:migrate_tx_record(TX),
-						gb_sets:add_element({{ar_tx:utility(TX2), Timestamp},
+						gb_sets:add_element({{ar_tx:utility(TX), Timestamp},
 								TXID, Status}, Acc)
 					end,
 					gb_sets:new(),
@@ -173,8 +172,7 @@ load_mempool() ->
 							Acc;
 						(TXID, {TX, _Status}, Acc) ->
 							Timestamp = get_or_create_tx_timestamp(TXID),
-							TX2 = ar_storage:migrate_tx_record(TX),
-							gb_sets:add_element({{ar_tx:utility(TX2), Timestamp},
+							gb_sets:add_element({{ar_tx:utility(TX), Timestamp},
 									TXID}, Acc)
 					end,
 					gb_sets:new(),
@@ -202,6 +200,12 @@ load_mempool() ->
 				{tx_propagation_queue, gb_sets:new()}
 			])
 	end.
+
+deserialize_tx(Bin) when is_binary(Bin) ->
+	{ok, TX} = ar_serialize:binary_to_tx(Bin),
+	TX;
+deserialize_tx(TX) ->
+	ar_storage:migrate_tx_record(TX).
 
 start_tx_mining_timer(TX) ->
 	%% Calling with ar_node_worker: allows to mock calculate_delay/1 in tests.
@@ -1356,7 +1360,8 @@ read_recent_blocks2([{BH, _, _} | BI]) ->
 	[B#block{ size_tagged_txs = SizeTaggedTXs, txs = TXs } | read_recent_blocks2(BI)].
 
 dump_mempool(TXs, MempoolSize) ->
-	case ar_storage:write_term(mempool, {TXs, MempoolSize}) of
+	SerializedTXs = maps:map(fun(_, {TX, St}) -> {ar_serialize:tx_to_binary(TX), St} end, TXs),
+	case ar_storage:write_term(mempool, {SerializedTXs, MempoolSize}) of
 		ok ->
 			ok;
 		{error, Reason} ->

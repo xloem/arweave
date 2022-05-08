@@ -124,7 +124,6 @@ test_uses_blacklists() ->
 	TX2 = sign_v1_tx(Wallet, #{ data => random_v1_data(2 * ?DATA_CHUNK_SIZE),
 			last_tx => get_tx_anchor(slave) }),
 	assert_post_tx_to_slave(TX2),
-	assert_wait_until_receives_txs([TX2]),
 	slave_mine(),
 	assert_slave_wait_until_height(length(TXs) + 1),
 	assert_post_tx_to_slave(TX),

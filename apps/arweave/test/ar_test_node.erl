@@ -162,6 +162,8 @@ connect_to_slave() ->
 	%% Unblock connections possibly blocked in the prior test code.
 	ar_peers:unblock_connections(),
 	slave_call(ar_peers, unblock_connections, []),
+	ar_poller:resume(),
+	slave_call(ar_poller, resume, []),
 	%% Make requests to the nodes to make them discover each other.
 	{ok, {{<<"200">>, <<"OK">>}, _, _, _, _}} =
 		ar_http:req(#{
@@ -195,6 +197,8 @@ connect_to_slave() ->
 	).
 
 disconnect_from_slave() ->
+	ar_poller:pause(),
+	slave_call(ar_poller, pause, []),
 	ar_peers:block_connections(),
 	slave_call(ar_peers, block_connections, []).
 

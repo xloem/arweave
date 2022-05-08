@@ -11,7 +11,7 @@
 		wallet_list_filepath/1, tx_filepath/1, tx_data_filepath/1, read_tx_file/1,
 		read_migrated_v1_tx_file/1, ensure_directories/1, write_file_atomic/2,
 		write_term/2, write_term/3, read_term/1, read_term/2, delete_term/1, is_file/1,
-		migrate_tx_record/1, migrate_tx_records/1, migrate_block_record/1]).
+		migrate_tx_record/1, migrate_block_record/1]).
 
 -export([init/1, handle_cast/2, handle_call/3, handle_info/2, terminate/2]).
 
@@ -135,7 +135,7 @@ read_block(BH) ->
 									read_block_from_file(Filename, Encoding)
 							end;
 						{ok, V} ->
-							migrate_block_record(binary_to_term(V));
+							parse_block_kv_binary(V);
 						{error, Reason} ->
 							?LOG_WARNING([{event, error_reading_block_from_kv_storage},
 									{block, ar_util:encode(BH)},
@@ -230,7 +230,7 @@ delete_blacklisted_tx(Hash) ->
 		[{_, DB}] ->
 			case ar_kv:get(DB, Hash) of
 				{ok, V} ->
-					TX = migrate_tx_record(binary_to_term(V)),
+					TX = parse_tx_kv_binary(V),
 					case TX#tx.format == 1 andalso TX#tx.data_size > 0 of
 						true ->
 							ar_data_sync:request_tx_data_removal(Hash),
@@ -271,8 +271,19 @@ delete_blacklisted_tx(Hash) ->
 			end
 	end.
 
-%% @doc Convert the stored tx record to its latest state in the code
-%% (assign the default values to all missing fields).
+parse_tx_kv_binary(Bin) ->
+	case catch ar_serialize:binary_to_tx(Bin) of
+		{ok, TX} ->
+			TX;
+		_ ->
+			migrate_tx_record(binary_to_term(Bin))
+	end.
+
+%% Convert the stored tx record to its latest state in the code
+%% (assign the default values to all missing fields). Since the version introducing
+%% the fork 2.6, the transactions are serialized via ar_serialize:tx_to_binary/1, which
+%% is maintained compatible with all past versions, so this code is only used
+%% on the nodes synced before the corresponding release.
 migrate_tx_record(#tx{} = TX) ->
 	TX;
 migrate_tx_record({tx, Format, ID, LastTX, Owner, Tags, Target, Quantity, Data,
@@ -283,8 +294,19 @@ migrate_tx_record({tx, Format, ID, LastTX, Owner, Tags, Target, Quantity, Data,
 			signature = Signature, signature_type = ?DEFAULT_KEY_TYPE,
 			reward = Reward, data_tree = DataTree }.
 
-%% @doc Convert the stored block record to its latest state in the code
-%% (assign the default values to all missing fields).
+parse_block_kv_binary(Bin) ->
+	case catch ar_serialize:binary_to_block(Bin) of
+		{ok, B} ->
+			B;
+		_ ->
+			migrate_block_record(binary_to_term(Bin))
+	end.
+
+%% Convert the stored block record to its latest state in the code
+%% (assign the default values to all missing fields). Since the version introducing
+%% the fork 2.6, the blocks are serialized via ar_serialize:block_to_binary/1, which
+%% is maintained compatible with all past block versions, so this code is only used
+%% on the nodes synced before the corresponding release.
 migrate_block_record(#block{} = B) ->
 	B;
 migrate_block_record({block, Nonce, PrevH, TS, Last, Diff, Height, Hash, H,
@@ -301,13 +323,6 @@ migrate_block_record({block, Nonce, PrevH, TS, Last, Diff, Height, Hash, H,
 			scheduled_usd_to_ar_rate = ScheduledRate,
 			packing_2_5_threshold = Packing_2_5_Threshold,
 			strict_data_split_threshold = StrictDataSplitThreshold }.
-
-%% @doc Convert the stored tx records to its latest state in the code
-%% (assign the default values to all missing fields).
-migrate_tx_records([]) ->
-	[];
-migrate_tx_records([TX | TXs]) ->
-	[migrate_tx_record(TX) | migrate_tx_records(TXs)].
 
 write_tx(TXs) when is_list(TXs) ->
 	lists:foldl(
@@ -832,8 +847,8 @@ write_block(B) ->
 		[{_, DB}] ->
 			TXIDs = lists:map(fun(TXID) when is_binary(TXID) -> TXID;
 					(#tx{ id = TXID }) -> TXID end, B#block.txs),
-			ar_kv:put(DB, B#block.indep_hash, term_to_binary(B#block{
-					hash_list = unset, size_tagged_txs = unset, txs = TXIDs }));
+			ar_kv:put(DB, B#block.indep_hash, ar_serialize:block_to_binary(B#block{
+					txs = TXIDs }));
 		_ ->
 			{error, not_initialized}
 	end.
