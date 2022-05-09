@@ -651,7 +651,7 @@ validate_spora_pow(B, PrevB, BDS, SearchSpaceUpperBound) ->
 								invalid_poa;
 							true ->
 								{ar_mine:spora_solution_hash(PrevH, Timestamp, H0, Chunk,
-										Height), <<>>}
+										Height), undefined}
 						end;
 					{ok, Byte} ->
 						{ar_mine:spora_solution_hash_with_entropy(PrevH, Timestamp, H0, Chunk,
