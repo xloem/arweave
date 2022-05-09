@@ -230,7 +230,8 @@ send_to_worker(Peer, {JSON, B}, W) ->
 									_ -> B#block.poa2 end,
 							Bin = ar_serialize:block_to_binary(B#block{ txs = TXs2,
 									poa = PoA, poa2 = PoA2 }),
-							ar_http_iface_client:send_block_binary(Peer, H, Bin)
+							ar_http_iface_client:send_block_binary(Peer, H, Bin,
+									B#block.recall_byte)
 					end
 				end,
 			gen_server:cast(W, {send_block2, Peer, SendAnnouncementFun, SendFun, 1, self()});

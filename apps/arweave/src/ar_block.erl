@@ -239,7 +239,6 @@ indep_hash(BDS, B) ->
 	case B#block.height >= ar_fork:height_2_6() andalso B#block.recall_byte /= undefined of
 		true ->
 			ar_deep_hash:hash([BDS, B#block.hash, B#block.nonce,
-					ar_block:poa_to_list(B#block.poa),
 					integer_to_binary(B#block.recall_byte)]);
 		false ->
 			case B#block.height >= ar_fork:height_2_4() of

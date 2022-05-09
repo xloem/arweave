@@ -1210,7 +1210,7 @@ get_error_of_data_limit_test() ->
 	?assertEqual({error, too_much_data}, Resp).
 
 send_block2_test_() ->
-	{timeout, 20000, fun test_send_block2/0}.
+	{timeout, 60, fun test_send_block2/0}.
 
 test_send_block2() ->
 	{_, Pub} = Wallet = ar_wallet:new(),
@@ -1343,9 +1343,17 @@ test_send_block2() ->
 	?assertEqual({ok, #block_announcement_response{ missing_chunk = false,
 			missing_tx_indices = [] }},
 			ar_serialize:binary_to_block_announcement_response(Body5)),
+	{H0, _Entropy} = ar_mine:spora_h0_with_entropy(ar_block:generate_block_data_segment(B6),
+			B6#block.nonce, B6#block.height),
+	SearchSpaceUpperBound = ar_node:get_recent_search_space_upper_bound_by_prev_h(
+			B6#block.previous_block),
+	{ok, RecallByte} = ar_mine:pick_recall_byte(H0, B6#block.previous_block,
+			SearchSpaceUpperBound),
 	{ok, {{<<"200">>, _}, _, <<"OK">>, _, _}} = ar_http:req(#{ method => post,
 		peer => slave_peer(), path => "/block2",
-		body => ar_serialize:block_to_binary(B6#block{ poa = #poa{} }) }),
+		headers => [{<<"arweave-recall-byte">>, integer_to_binary(RecallByte)}],
+		body => ar_serialize:block_to_binary(B6#block{ recall_byte = RecallByte,
+				poa = #poa{} }) }),
 	assert_slave_wait_until_height(3 + ?SEARCH_SPACE_UPPER_BOUND_DEPTH + 1).
 
 send_missing_transactions_along_with_the_block_test_() ->

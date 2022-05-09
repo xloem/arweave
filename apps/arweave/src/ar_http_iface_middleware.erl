@@ -1887,7 +1887,24 @@ post_block(check_transactions_are_present, {BShadow, Peer}, Req, ReceiveTimestam
 			post_block(enqueue_block, {BShadow, Peer}, Req, ReceiveTimestamp)
 	end;
 post_block(enqueue_block, {B, Peer}, Req, Timestamp) ->
-	ar_block_pre_validator:pre_validate(B, Peer, Timestamp, erlang:get(read_body_time),
+	B2 =
+		case B#block.height >= ar_fork:height_2_6() of
+			true ->
+				B;
+			false ->
+				case cowboy_req:header(<<"arweave-recall-byte">>, Req, not_set) of
+					not_set ->
+						B;
+					ByteBin ->
+						case catch binary_to_integer(ByteBin) of
+							RecallByte when is_integer(RecallByte) ->
+								B#block{ recall_byte = RecallByte };
+							_ ->
+								B
+						end
+				end
+		end,
+	ar_block_pre_validator:pre_validate(B2, Peer, Timestamp, erlang:get(read_body_time),
 			erlang:get(body_size)),
 	{200, #{}, <<"OK">>, Req}.
 

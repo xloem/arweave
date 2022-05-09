@@ -507,7 +507,7 @@ test_fork_recovery(Split) ->
 	MasterProofs2 = post_proofs_to_master(MasterB2, MasterTX2, MasterChunks2),
 	{MasterTX3, MasterChunks3} = tx(Wallet, {Split, 16}),
 	?debugFmt("Posting tx to master ~s.~n", [ar_util:encode(MasterTX3#tx.id)]),
-	MasterB3 = post_and_mine(#{ miner => {master, Master}, await_on => {slave, Slave} },
+	MasterB3 = post_and_mine(#{ miner => {master, Master}, await_on => {master, Master} },
 			[MasterTX3]),
 	?debugFmt("Mined block ~s, height ~B.~n", [ar_util:encode(MasterB3#block.indep_hash),
 			MasterB3#block.height]),
@@ -634,8 +634,7 @@ test_mines_off_only_second_last_chunks() ->
 	).
 
 packs_chunks_depending_on_packing_threshold_test_() ->
-	test_with_mocked_functions([{ar_fork, height_2_6, fun() -> 20 end},
-			{ar_fork, height_2_5, fun() -> 10 end}],
+	test_with_mocked_functions([{ar_fork, height_2_6, fun() -> 10 end}],
 			fun test_packs_chunks_depending_on_packing_threshold/0).
 
 test_packs_chunks_depending_on_packing_threshold() ->
@@ -643,20 +642,19 @@ test_packs_chunks_depending_on_packing_threshold() ->
 	SlaveWallet = slave_call(ar_wallet, new_ecdsa, []),
 	MasterAddr = ar_wallet:to_address(MasterWallet),
 	SlaveAddr = ar_wallet:to_address(SlaveWallet),
-	{Master, Slave, Wallet} = setup_nodes(MasterAddr, SlaveAddr),
-	PadFun = fun(X) -> ((X - 1) div 262144 + 1) * 262144 end,
-	{LegacyProofsBeforeFork, LegacyProofs, StrictProofs, V1Proofs,
-			ExpectedPackedSizeLowerBound} = lists:foldl(
-		fun(Height, {Acc1, Acc2, Acc3, Acc4, Acc5}) ->
+	%% 262144 * 50 is an arbitrary (but chosen so that we are going to have data
+	%% below and above it) strict data split threshold.
+	{Master, Slave, Wallet} = setup_nodes(MasterAddr, SlaveAddr, 262144 * 50),
+	{LegacyProofs, StrictProofs, V1Proofs} = lists:foldl(
+		fun(Height, {Acc1, Acc2, Acc3}) ->
 			%% The packing threshold moves at a pace of 120 chunks per block in DEBUG
 			%% mode. Submit a comparable amount of data so that the blocks 10-20 are
-			%% likely to contain both packed and unpacked chunks. The precise number
+			%% likely to contain chunks with both packings. The precise number
 			%% is not important here.
 			ChunkCount = case Height >= 10 of true -> 5; _ -> 30 end,
 			{#tx{ id = TXID1 } = TX1, Chunks1} = tx(Wallet, {custom_split, ChunkCount}),
-			{#tx{ id = TXID2, data_size = StrictV2Size } = TX2, Chunks2} = tx(Wallet,
-					{original_split, ChunkCount}),
-			{#tx{ id = TXID3, data_size = V1Size } = TX3, Chunks3} = v1_tx(Wallet),
+			{#tx{ id = TXID2 } = TX2, Chunks2} = tx(Wallet, {original_split, ChunkCount}),
+			{#tx{ id = TXID3 } = TX3, Chunks3} = v1_tx(Wallet),
 			{Miner, Receiver} =
 				case rand:uniform(2) == 1 of
 					true ->
@@ -671,78 +669,27 @@ test_packs_chunks_depending_on_packing_threshold() ->
 			B = post_and_mine(#{ miner => Miner, await_on => Receiver }, [TX1, TX2, TX3]),
 			post_proofs_to_master(B, TX1, Chunks1),
 			post_proofs_to_slave(B, TX2, Chunks2),
-			{case Height < 10 of true ->
-						maps:put(TXID1, get_records_with_proofs(B, TX1, Chunks1), Acc1);
-							false -> Acc1 end,
-					case Height >= 10 of true ->
-						maps:put(TXID1, get_records_with_proofs(B, TX1, Chunks1), Acc2);
-							false -> Acc2 end,
-					maps:put(TXID2, get_records_with_proofs(B, TX2, Chunks2), Acc3),
-					maps:put(TXID3, get_records_with_proofs(B, TX3, Chunks3), Acc4),
-					Acc5 + PadFun(StrictV2Size) + PadFun(V1Size)}
+			{maps:put(TXID1, get_records_with_proofs(B, TX1, Chunks1), Acc1),
+					maps:put(TXID2, get_records_with_proofs(B, TX2, Chunks2), Acc2),
+					maps:put(TXID3, get_records_with_proofs(B, TX3, Chunks3), Acc3)}
 		end,
-		{#{}, #{}, #{}, #{}, 0},
-		lists:seq(1, 30)
+		{#{}, #{}, #{}},
+		lists:seq(1, 20)
 	),
-	BI30 = ar_node:get_block_index(),
-	Fork_2_5_H = element(1, lists:nth(11, lists:reverse(BI30))),
-	Fork_2_5_B = read_block_when_stored(Fork_2_5_H),
-	SearchSpaceUpperBoundH_2_5 = element(1, lists:nth(11 - (?SEARCH_SPACE_UPPER_BOUND_DEPTH),
-			lists:reverse(BI30))),
-	SearchSpaceUpperBoundB_2_5 = read_block_when_stored(SearchSpaceUpperBoundH_2_5),
-	WeaveSize_2_5 = SearchSpaceUpperBoundB_2_5#block.weave_size,
-	LastB_2_5 = lists:foldl(
-		fun(Height, PrevB) ->
-			H = element(1, lists:nth(Height + 1, lists:reverse(BI30))),
-			B = read_block_when_stored(H),
-			?assertEqual(max(0, WeaveSize_2_5 - (Height - 10) * (?DATA_CHUNK_SIZE) * 120),
-					B#block.packing_2_5_threshold),
-			PoA = B#block.poa,
-			BI = lists:reverse(lists:sublist(lists:reverse(BI30), Height)),
-			SearchSpaceUpperBound = element(2, lists:nth(?SEARCH_SPACE_UPPER_BOUND_DEPTH, BI)),
-			{H0, _Entropy} = ar_mine:spora_h0_with_entropy(
-					ar_block:generate_block_data_segment(B), B#block.nonce, Height),
-			{ok, RecallByte} = ar_mine:pick_recall_byte(H0, PrevB#block.indep_hash,
-					SearchSpaceUpperBound),
-			{BlockStart, BlockEnd, TXRoot} = ar_block_index:get_block_bounds(RecallByte),
-			case RecallByte >= B#block.packing_2_5_threshold of
-				true ->
-					?debugFmt("Mined a chunk above the 2.5 packing threshold. "
-							"Recall byte: ~B. Previous block: ~s.",
-							[RecallByte, ar_util:encode(PrevB#block.indep_hash)]),
-					?assertEqual(true, ar_poa:validate(BlockStart, RecallByte, TXRoot,
-							BlockEnd - BlockStart, PoA, B#block.packing_2_6_threshold,
-							B#block.strict_data_split_threshold, B#block.reward_addr)),
-					?assertEqual(false, ar_poa:validate_pre_fork_2_5(RecallByte - BlockStart,
-							TXRoot, BlockEnd - BlockStart, PoA));
-				false ->
-					?debugFmt("Mined a chunk below the 2.5 packing threshold. "
-							"Recall byte: ~B. Previous block: ~s.",
-							[RecallByte, ar_util:encode(PrevB#block.indep_hash)]),
-					?assertEqual(true, ar_poa:validate_pre_fork_2_5(RecallByte - BlockStart,
-							TXRoot, BlockEnd - BlockStart, PoA)),
-					?assertEqual(false, ar_poa:validate(BlockStart, RecallByte, TXRoot,
-							BlockEnd - BlockStart, PoA, B#block.packing_2_6_threshold,
-							B#block.strict_data_split_threshold, B#block.reward_addr))
-			end,
-			B
-		end,
-		Fork_2_5_B,
-		lists:seq(11, 20)
-	),
-	?assertEqual(0, LastB_2_5#block.packing_2_5_threshold),
-	SearchSpaceUpperBoundH_2_6 = element(1, lists:nth(21 - (?SEARCH_SPACE_UPPER_BOUND_DEPTH),
-			lists:reverse(BI30))),
-	SearchSpaceUpperBoundB_2_6 = read_block_when_stored(SearchSpaceUpperBoundH_2_6),
-	WeaveSize_2_6 = SearchSpaceUpperBoundB_2_6#block.weave_size,
+	BI20 = ar_node:get_block_index(),
+	LastB_2_5 = read_block_when_stored(element(1, lists:nth(10, lists:reverse(BI20)))),
+	SearchSpaceUpperBoundH = element(1, lists:nth(11 - (?SEARCH_SPACE_UPPER_BOUND_DEPTH),
+			lists:reverse(BI20))),
+	SearchSpaceUpperBoundB = read_block_when_stored(SearchSpaceUpperBoundH),
+	WeaveSize = SearchSpaceUpperBoundB#block.weave_size,
 	LastB = lists:foldl(
 		fun(Height, PrevB) ->
-			H = element(1, lists:nth(Height + 1, lists:reverse(BI30))),
+			H = element(1, lists:nth(Height + 1, lists:reverse(BI20))),
 			B = read_block_when_stored(H),
-			?assertEqual(max(0, WeaveSize_2_6 - (Height - 20) * (?DATA_CHUNK_SIZE) * 120),
+			?assertEqual(max(0, WeaveSize - (Height - 10) * (?DATA_CHUNK_SIZE) * 120),
 					B#block.packing_2_6_threshold),
 			PoA = B#block.poa,
-			BI = lists:reverse(lists:sublist(lists:reverse(BI30), Height)),
+			BI = lists:reverse(lists:sublist(lists:reverse(BI20), Height)),
 			SearchSpaceUpperBound = element(2, lists:nth(?SEARCH_SPACE_UPPER_BOUND_DEPTH, BI)),
 			{H0, _Entropy} = ar_mine:spora_h0_with_entropy(
 					ar_block:generate_block_data_segment(B), B#block.nonce, Height),
@@ -756,33 +703,19 @@ test_packs_chunks_depending_on_packing_threshold() ->
 							[RecallByte, ar_util:encode(PrevB#block.indep_hash)]),
 					?assertEqual(true, ar_poa:validate(BlockStart, RecallByte, TXRoot,
 							BlockEnd - BlockStart, PoA, B#block.packing_2_6_threshold,
-							B#block.strict_data_split_threshold, B#block.reward_addr)),
-					?assertEqual(false, ar_poa:validate_pre_fork_2_5(RecallByte - BlockStart,
-							TXRoot, BlockEnd - BlockStart, PoA));
+							B#block.strict_data_split_threshold, B#block.reward_addr));
 				false ->
-					case RecallByte >= B#block.packing_2_5_threshold of
-						true ->
-							?debugFmt("Mined a chunk above the 2.5 packing threshold. "
-									"Recall byte: ~B. Previous block: ~s.",
-									[RecallByte, ar_util:encode(PrevB#block.indep_hash)]),
-							?assertEqual(true, ar_poa:validate(BlockStart, RecallByte, TXRoot,
-									BlockEnd - BlockStart, PoA, B#block.packing_2_6_threshold,
-									B#block.strict_data_split_threshold, B#block.reward_addr));
-						false ->
-							?debugFmt("Mined a chunk below the 2.5 packing threshold. "
-									"Recall byte: ~B. Previous block: ~s.",
-									[RecallByte, ar_util:encode(PrevB#block.indep_hash)]),
-							?assertEqual(true, ar_poa:validate_pre_fork_2_5(RecallByte,
-									BI, PoA)),
-							?assertEqual(false, ar_poa:validate(BlockStart, RecallByte, TXRoot,
-									BlockEnd - BlockStart, PoA, B#block.packing_2_6_threshold,
-									B#block.strict_data_split_threshold, B#block.reward_addr))
-					end
+					?debugFmt("Mined a chunk above the 2.5 packing threshold. "
+							"Recall byte: ~B. Previous block: ~s.",
+							[RecallByte, ar_util:encode(PrevB#block.indep_hash)]),
+					?assertEqual(true, ar_poa:validate(BlockStart, RecallByte, TXRoot,
+							BlockEnd - BlockStart, PoA, B#block.packing_2_6_threshold,
+							B#block.strict_data_split_threshold, B#block.reward_addr))
 			end,
 			B
 		end,
 		LastB_2_5,
-		lists:seq(21, 30)
+		lists:seq(11, 20)
 	),
 	?assertEqual(0, LastB#block.packing_2_6_threshold),
 	?debugMsg("Asserting synced data with the strict splits."),
@@ -793,15 +726,6 @@ test_packs_chunks_depending_on_packing_threshold() ->
 			assert_get_tx_data_slave(TXID, ExpectedData)
 		end,
 		StrictProofs
-	),
-	?debugMsg("Asserting synced data with the legacy splits, placed before the 2.5 fork."),
-	maps:map(
-		fun(TXID, [{_, _, Chunks, _} | _]) ->
-			ExpectedData = ar_util:encode(binary:list_to_bin(Chunks)),
-			assert_get_tx_data_master(TXID, ExpectedData),
-			assert_get_tx_data_slave(TXID, ExpectedData)
-		end,
-		LegacyProofsBeforeFork
 	),
 	?debugMsg("Asserting synced v1 data."),
 	maps:map(
@@ -814,16 +738,13 @@ test_packs_chunks_depending_on_packing_threshold() ->
 	),
 	?debugMsg("Asserting synced chunks."),
 	wait_until_syncs_chunks([P || {_, _, _, P} <- lists:flatten(maps:values(StrictProofs))]),
-	wait_until_syncs_chunks([P || {_, _, _, P} <- lists:flatten(
-			maps:values(LegacyProofsBeforeFork))]),
 	wait_until_syncs_chunks([P || {_, _, _, P} <- lists:flatten(maps:values(V1Proofs))]),
 	slave_wait_until_syncs_chunks([P || {_, _, _, P} <- lists:flatten(
 			maps:values(StrictProofs))]),
-	slave_wait_until_syncs_chunks([P || {_, _, _, P} <- lists:flatten(
-			maps:values(LegacyProofsBeforeFork))]),
 	slave_wait_until_syncs_chunks([P || {_, _, _, P} <- lists:flatten(maps:values(V1Proofs))]),
 	maps:map(
-		fun(TXID, [{_B, _, Chunks, _} | _] = Proofs) ->
+		fun(TXID, [{B, _TX, Chunks, _} | _] = Proofs) ->
+			TXEndOffset = element(1, element(4, lists:last(Proofs))),
 			BigChunks = lists:filter(fun(C) -> byte_size(C) == 262144 end, Chunks),
 			Length = length(Chunks),
 			LastSize = byte_size(lists:last(Chunks)),
@@ -836,7 +757,8 @@ test_packs_chunks_depending_on_packing_threshold() ->
 							andalso LastSize < 262144
 							andalso SecondLastSize < 262144
 							andalso SecondLastSize >= DataPathSize
-							andalso LastSize + SecondLastSize > 262144) of
+							andalso LastSize + SecondLastSize > 262144)
+					orelse TXEndOffset =< B#block.strict_data_split_threshold of
 				true ->
 					?debugMsg("Asserting random split which turned out strict."),
 					ExpectedData = ar_util:encode(binary:list_to_bin(Chunks)),
@@ -845,7 +767,8 @@ test_packs_chunks_depending_on_packing_threshold() ->
 					wait_until_syncs_chunks([P || {_, _, _, P} <- Proofs]),
 					slave_wait_until_syncs_chunks([P || {_, _, _, P} <- Proofs]);
 				false ->
-					?debugMsg("Asserting random split which turned out NOT strict."),
+					?debugMsg("Asserting random split which turned out NOT strict"
+							" and was placed above the strict data split threshold."),
 					assert_data_not_found_master(TXID),
 					assert_data_not_found_slave(TXID)
 			end
@@ -861,21 +784,6 @@ test_packs_chunks_depending_on_packing_threshold() ->
 		element(3, sys:get_state(ar_sync_record))
 	),
 	?assertEqual(3, length(maps:keys(SyncRecordByType))),
-	true = ar_util:do_until(
-		fun() ->
-			UnpackedSize = ar_intervals:sum(maps:get({ar_data_sync, unpacked},
-					SyncRecordByType)),
-			PackedSize = ar_intervals:sum(maps:get({ar_data_sync, {spora_2_6, MasterAddr}},
-					SyncRecordByType)),
-			PackedSize < LastB#block.weave_size
-				andalso UnpackedSize + PackedSize < LastB#block.strict_data_split_threshold
-						+ PadFun(LastB#block.weave_size
-								- LastB#block.strict_data_split_threshold)
-				andalso PackedSize > ExpectedPackedSizeLowerBound
-		end,
-		200,
-		60000
-	),
 	SlaveSyncRecordByType = maps:filter(
 		fun	({ar_data_sync, _}, _) ->
 				true;
@@ -885,20 +793,64 @@ test_packs_chunks_depending_on_packing_threshold() ->
 		element(3, slave_call(sys, get_state, [ar_sync_record]))
 	),
 	?assertEqual(3, length(maps:keys(SlaveSyncRecordByType))),
-	true = ar_util:do_until(
+	UnpackedSize = ar_intervals:sum(maps:get({ar_data_sync, unpacked}, SyncRecordByType)),
+	Packed_2_6_Size = ar_intervals:sum(maps:get({ar_data_sync, {spora_2_6, MasterAddr}},
+			SyncRecordByType)),
+	Packed_2_5_Size = ar_intervals:sum(maps:get({ar_data_sync, spora_2_5}, SyncRecordByType)),
+	SlaveUnpackedSize = ar_intervals:sum(maps:get({ar_data_sync, unpacked},
+			SlaveSyncRecordByType)),
+	SlavePacked_2_6_Size = ar_intervals:sum(maps:get({ar_data_sync, {spora_2_6, SlaveAddr}},
+			SlaveSyncRecordByType)),
+	SlavePacked_2_5_Size = ar_intervals:sum(maps:get({ar_data_sync, spora_2_5},
+			SlaveSyncRecordByType)),
+	%% The data should have ended up on at least one of the nodes with at least one packing.
+	?assert(LastB#block.weave_size =<
+			UnpackedSize
+			+ Packed_2_6_Size
+			+ Packed_2_5_Size
+			+ SlaveUnpackedSize
+			+ SlavePacked_2_6_Size
+			+ SlavePacked_2_5_Size),
+	LastSearchSpaceUpperBoundH = element(1, lists:nth(21 - (?SEARCH_SPACE_UPPER_BOUND_DEPTH),
+			lists:reverse(BI20))),
+	LastSearchSpaceUpperBoundB = read_block_when_stored(LastSearchSpaceUpperBoundH),
+	LastSearchSpaceUpperBound = LastSearchSpaceUpperBoundB#block.weave_size,
+	%% The data above the search space upper bound is not packed.
+	?assert(Packed_2_5_Size + Packed_2_6_Size =< LastSearchSpaceUpperBound),
+	?assert(SlavePacked_2_5_Size + SlavePacked_2_6_Size =< LastSearchSpaceUpperBound),
+	%% The 2.5 data must be eventually repacked to 2.6.
+	ar_util:do_until(
 		fun() ->
-			SlaveUnpackedSize = ar_intervals:sum(maps:get({ar_data_sync, unpacked},
-					SlaveSyncRecordByType)),
-			SlavePackedSize = ar_intervals:sum(maps:get({ar_data_sync, {spora_2_6, SlaveAddr}},
-					SlaveSyncRecordByType)),
-			SlavePackedSize < LastB#block.weave_size
-				andalso SlaveUnpackedSize
-					+ SlavePackedSize < LastB#block.strict_data_split_threshold
-					+ PadFun(LastB#block.weave_size - LastB#block.strict_data_split_threshold)
-				andalso SlavePackedSize > ExpectedPackedSizeLowerBound
+			Map = maps:filter(
+				fun	({ar_data_sync, _}, _) ->
+						true;
+					(_, _) ->
+						false
+				end,
+				element(3, sys:get_state(ar_sync_record))
+			),
+			 ar_intervals:sum(maps:get({ar_data_sync, spora_2_5}, Map)) == 0
 		end,
-		200,
-		60000
+		100,
+		20000
+	),
+	%% Everything above the strict data split threshold (technical limitation) and below
+	%% the search space upper bound (protocol limitation) must be eventually packed to 2.6.
+	ar_util:do_until(
+		fun() ->
+			Map = maps:filter(
+				fun	({ar_data_sync, _}, _) ->
+						true;
+					(_, _) ->
+						false
+				end,
+				element(3, sys:get_state(ar_sync_record))
+			),
+			ar_intervals:sum(maps:get({ar_data_sync, {spora_2_6, MasterAddr}}, Map))
+					== LastSearchSpaceUpperBound - LastB#block.strict_data_split_threshold
+		end,
+		100,
+		20000
 	).
 
 get_records_with_proofs(B, TX, Chunks) ->
@@ -906,13 +858,15 @@ get_records_with_proofs(B, TX, Chunks) ->
 
 setup_nodes() ->
 	setup_nodes(ar_wallet:to_address(ar_wallet:new_ecdsa()),
-			ar_wallet:to_address(slave_call(ar_wallet, new_ecdsa, []))).
+			ar_wallet:to_address(slave_call(ar_wallet, new_ecdsa, [])), 0).
 
-setup_nodes(MasterAddr, SlaveAddr) ->
+setup_nodes(MasterAddr, SlaveAddr, StrictDataSplitThreshold) ->
 	Wallet = {_, Pub} = ar_wallet:new(),
 	[B0] = ar_weave:init([{ar_wallet:to_address(Pub), ?AR(200), <<>>}]),
-	{Master, _} = start(B0, MasterAddr),
-	{Slave, _} = slave_start(B0, SlaveAddr),
+	B02 = B0#block{ strict_data_split_threshold = StrictDataSplitThreshold },
+	B03 = B02#block{ indep_hash = ar_block:indep_hash(B02) },
+	{Master, _} = start(B03, MasterAddr),
+	{Slave, _} = slave_start(B03, SlaveAddr),
 	connect_to_slave(),
 	{Master, Slave, Wallet}.
 

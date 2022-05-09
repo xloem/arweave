@@ -176,7 +176,14 @@ pre_validate_previous_block(B, Peer, Timestamp, ReadBodyTime, BodySize) ->
 				false ->
 					ok;
 				true ->
-					pre_validate_indep_hash(B, PrevB, Peer, Timestamp, ReadBodyTime, BodySize)
+					case B#block.height >= ar_fork:height_2_6() of
+						true ->
+							pre_validate_indep_hash(B, PrevB, Peer, Timestamp, ReadBodyTime,
+									BodySize);
+						false ->
+							pre_validate_may_be_fetch_chunk(B, none, PrevB, Peer, Timestamp,
+									ReadBodyTime, BodySize)
+					end
 			end
 	end.
 
@@ -269,8 +276,7 @@ pre_validate_difficulty(B, BDS, PrevB, Peer, Timestamp, ReadBodyTime, BodySize) 
 					pre_validate_quick_pow(B, BDS, PrevB, Peer, Timestamp, ReadBodyTime,
 							BodySize);
 				false ->
-					pre_validate_pow_or_search_space_number(B, BDS, PrevB, Peer, Timestamp,
-							ReadBodyTime, BodySize)
+					pre_validate_pow(B, BDS, PrevB, Peer, Timestamp, ReadBodyTime, BodySize)
 			end;
 		_ ->
 			post_block_reject_warn(B, check_difficulty, Peer),
@@ -483,33 +489,57 @@ pre_validate_nonce_limiter(B, Peer, Timestamp, ReadBodyTime, BodySize) ->
 pre_validate_may_be_fetch_chunk(#block{ recall_byte = RecallByte,
 		poa = #poa{ chunk = <<>> } } = B, BDS, PrevB, Peer, Timestamp, ReadBodyTime,
 		BodySize) when RecallByte /= undefined ->
-	Options =
-		case B#block.height >= ar_fork:height_2_6() of
-			true ->
-				Packing =
-					case RecallByte >= ar_block:shift_packing_2_6_threshold(
-							PrevB#block.packing_2_6_threshold) of
-						true ->
-							{spora_2_6, B#block.reward_addr};
-						false ->
-							spora_2_5
-					end,
-				#{ pack => true, packing => Packing, bucket_based_offset => true };
-			false ->
-				#{ pack => false, packing => spora_2_5, bucket_based_offset => true }
-		end,
-	case ar_data_sync:get_chunk(RecallByte + 1, Options) of
-		{ok, #{ chunk := Chunk, data_path := DataPath, tx_path := TXPath }} ->
-			prometheus_counter:inc(block2_fetched_chunks),
-			B2 = B#block{ poa = #poa{ chunk = Chunk, tx_path = TXPath,
-					data_path = DataPath } },
-			pre_validate_pow(B2, BDS, PrevB, Peer, Timestamp, ReadBodyTime, BodySize);
-		_ ->
-			ar_events:send(block, {rejected, failed_to_fetch_chunk, B#block.indep_hash, Peer}),
-			ok
+	case ar_node:get_recent_search_space_upper_bound_by_prev_h(PrevB#block.indep_hash) of
+		not_found ->
+			%% The new blocks should have been applied in the meantime since we
+			%% looked for the previous block in the block cache.
+			ok;
+		SearchSpaceUpperBound ->
+			Options =
+				case B#block.height >= ar_fork:height_2_6() of
+					true ->
+						Packing_2_6_Threshold =
+							case B#block.height == ar_fork:height_2_6() of
+								true ->
+									SearchSpaceUpperBound;
+								false ->
+									ar_block:shift_packing_2_6_threshold(
+											PrevB#block.packing_2_6_threshold)
+							end,
+						Packing =
+							case RecallByte >= Packing_2_6_Threshold of
+								true ->
+									{spora_2_6, B#block.reward_addr};
+								false ->
+									spora_2_5
+							end,
+						#{ pack => true, packing => Packing, bucket_based_offset => true };
+					false ->
+						#{ pack => false, packing => spora_2_5, bucket_based_offset => true }
+				end,
+			case ar_data_sync:get_chunk(RecallByte + 1, Options) of
+				{ok, #{ chunk := Chunk, data_path := DataPath, tx_path := TXPath }} ->
+					prometheus_counter:inc(block2_fetched_chunks),
+					B2 = B#block{ poa = #poa{ chunk = Chunk, tx_path = TXPath,
+							data_path = DataPath } },
+					pre_validate_pow_or_indep_hash(B2, BDS, PrevB, Peer, Timestamp,
+							ReadBodyTime, BodySize);
+				_ ->
+					ar_events:send(block, {rejected, failed_to_fetch_chunk, B#block.indep_hash,
+							Peer}),
+					ok
+			end
 	end;
 pre_validate_may_be_fetch_chunk(B, BDS, PrevB, Peer, Timestamp, ReadBodyTime, BodySize) ->
-	pre_validate_pow(B, BDS, PrevB, Peer, Timestamp, ReadBodyTime, BodySize).
+	pre_validate_pow_or_indep_hash(B, BDS, PrevB, Peer, Timestamp, ReadBodyTime, BodySize).
+
+pre_validate_pow_or_indep_hash(B, BDS, PrevB, Peer, Timestamp, ReadBodyTime, BodySize) ->
+	case B#block.height >= ar_fork:height_2_6() of
+		true ->
+			pre_validate_pow(B, BDS, PrevB, Peer, Timestamp, ReadBodyTime, BodySize);
+		false ->
+			pre_validate_indep_hash(B, PrevB, Peer, Timestamp, ReadBodyTime, BodySize)
+	end.
 
 pre_validate_pow(B, BDS, PrevB, Peer, Timestamp, ReadBodyTime, BodySize) ->
 	#block{ indep_hash = PrevH } = PrevB,
@@ -621,7 +651,7 @@ validate_spora_pow(B, PrevB, BDS, SearchSpaceUpperBound) ->
 								invalid_poa;
 							true ->
 								{ar_mine:spora_solution_hash(PrevH, Timestamp, H0, Chunk,
-										Height), undefined}
+										Height), <<>>}
 						end;
 					{ok, Byte} ->
 						{ar_mine:spora_solution_hash_with_entropy(PrevH, Timestamp, H0, Chunk,
