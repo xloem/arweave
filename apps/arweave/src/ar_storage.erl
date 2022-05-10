@@ -385,7 +385,7 @@ write_tx(#tx{ format = Format } = TX) ->
 write_tx_header(TX) ->
 	case ets:lookup(?MODULE, tx_db) of
 		[{_, DB}] ->
-			ar_kv:put(DB, TX#tx.id, term_to_binary(TX#tx{ data = <<>> }));
+			ar_kv:put(DB, TX#tx.id, ar_serialize:tx_to_binary(TX#tx{ data = <<>> }));
 		_ ->
 			{error, not_initialized}
 	end.
@@ -467,7 +467,7 @@ read_tx2(ID) ->
 				not_found ->
 					read_tx_from_file(ID);
 				{ok, Binary} ->
-					TX = migrate_tx_record(binary_to_term(Binary)),
+					TX = parse_tx_kv_binary(Binary),
 					case TX#tx.format == 1 andalso TX#tx.data_size > 0 of
 						true ->
 							case read_tx_data_from_kv_storage(TX#tx.id) of

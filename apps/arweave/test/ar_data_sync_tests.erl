@@ -230,7 +230,7 @@ test_rejects_chunks_exceeding_disk_pool_limit() ->
 			ar_tx:chunks_to_size_tagged_chunks(Chunks1)
 		)
 	),
-	{TX1, Chunks1} = tx(Wallet, {fixed_data, Data1, DataRoot1, Chunks1}),
+	{TX1, Chunks1} = tx(Wallet, {fixed_data, DataRoot1, Chunks1}),
 	assert_post_tx_to_master(TX1),
 	[{_, FirstProof1} | Proofs1] = build_proofs(TX1, Chunks1, [TX1], 0, 0),
 	lists:foreach(
@@ -258,7 +258,7 @@ test_rejects_chunks_exceeding_disk_pool_limit() ->
 			ar_tx:chunks_to_size_tagged_chunks(Chunks2)
 		)
 	),
-	{TX2, Chunks2} = tx(Wallet, {fixed_data, Data2, DataRoot2, Chunks2}),
+	{TX2, Chunks2} = tx(Wallet, {fixed_data, DataRoot2, Chunks2}),
 	assert_post_tx_to_master(TX2),
 	Proofs2 = build_proofs(TX2, Chunks2, [TX2], 0, 0),
 	lists:foreach(
@@ -282,7 +282,7 @@ test_rejects_chunks_exceeding_disk_pool_limit() ->
 			ar_tx:chunks_to_size_tagged_chunks(Chunks3)
 		)
 	),
-	{TX3, Chunks3} = tx(Wallet, {fixed_data, Data3, DataRoot3, Chunks3}),
+	{TX3, Chunks3} = tx(Wallet, {fixed_data, DataRoot3, Chunks3}),
 	assert_post_tx_to_master(TX3),
 	[{_, FirstProof3} | Proofs3] = build_proofs(TX3, Chunks3, [TX3], 0, 0),
 	lists:foreach(
@@ -415,11 +415,8 @@ syncs_data_test_() ->
 	test_on_fork(height_2_5, 0, fun test_syncs_data/0).
 
 test_syncs_data() ->
-	test_syncs_data(original_split).
-
-test_syncs_data(Split) ->
 	{_Master, _Slave, Wallet} = setup_nodes(),
-	Records = post_random_blocks(Wallet, Split),
+	Records = post_random_blocks(Wallet),
 	RecordsWithProofs = lists:flatmap(
 			fun({B, TX, Chunks}) -> get_records_with_proofs(B, TX, Chunks) end, Records),
 	lists:foreach(
@@ -642,19 +639,29 @@ test_packs_chunks_depending_on_packing_threshold() ->
 	SlaveWallet = slave_call(ar_wallet, new_ecdsa, []),
 	MasterAddr = ar_wallet:to_address(MasterWallet),
 	SlaveAddr = ar_wallet:to_address(SlaveWallet),
-	%% 262144 * 50 is an arbitrary (but chosen so that we are going to have data
-	%% below and above it) strict data split threshold.
-	{Master, Slave, Wallet} = setup_nodes(MasterAddr, SlaveAddr, 262144 * 50),
+	DataMap =
+		lists:foldr(
+			fun(Height, Acc) ->
+				%% The packing threshold moves at a pace of 120 chunks per block in DEBUG
+				%% mode. Submit a comparable amount of data so that the blocks 10-20 are
+				%% likely to contain chunks with both packings. The precise number
+				%% is not important here.
+				ChunkCount = case Height >= 10 of true -> 5; _ -> 30 end,
+				{DR1, Chunks1} = generate_random_split(ChunkCount),
+				{DR2, Chunks2} = generate_random_original_split(ChunkCount),
+				{DR3, Chunks3} = generate_random_original_v1_split(),
+				maps:put(Height, {{DR1, Chunks1}, {DR2, Chunks2}, {DR3, Chunks3}}, Acc)
+			end,
+			#{},
+			lists:seq(1, 20)
+		),
+	{Master, Slave, Wallet} = setup_nodes(MasterAddr, SlaveAddr),
 	{LegacyProofs, StrictProofs, V1Proofs} = lists:foldl(
 		fun(Height, {Acc1, Acc2, Acc3}) ->
-			%% The packing threshold moves at a pace of 120 chunks per block in DEBUG
-			%% mode. Submit a comparable amount of data so that the blocks 10-20 are
-			%% likely to contain chunks with both packings. The precise number
-			%% is not important here.
-			ChunkCount = case Height >= 10 of true -> 5; _ -> 30 end,
-			{#tx{ id = TXID1 } = TX1, Chunks1} = tx(Wallet, {custom_split, ChunkCount}),
-			{#tx{ id = TXID2 } = TX2, Chunks2} = tx(Wallet, {original_split, ChunkCount}),
-			{#tx{ id = TXID3 } = TX3, Chunks3} = v1_tx(Wallet),
+			{{DR1, Chunks1}, {DR2, Chunks2}, {DR3, Chunks3}} = maps:get(Height, DataMap),
+			{#tx{ id = TXID1 } = TX1, Chunks1} = tx(Wallet, {fixed_data, DR1, Chunks1}),
+			{#tx{ id = TXID2 } = TX2, Chunks2} = tx(Wallet, {fixed_data, DR2, Chunks2}),
+			{#tx{ id = TXID3 } = TX3, Chunks3} = tx(Wallet, {fixed_data, DR3, Chunks3}, v1),
 			{Miner, Receiver} =
 				case rand:uniform(2) == 1 of
 					true ->
@@ -691,23 +698,37 @@ test_packs_chunks_depending_on_packing_threshold() ->
 			PoA = B#block.poa,
 			BI = lists:reverse(lists:sublist(lists:reverse(BI20), Height)),
 			SearchSpaceUpperBound = element(2, lists:nth(?SEARCH_SPACE_UPPER_BOUND_DEPTH, BI)),
-			{H0, _Entropy} = ar_mine:spora_h0_with_entropy(
-					ar_block:generate_block_data_segment(B), B#block.nonce, Height),
+			BDS = ar_block:generate_block_data_segment(B),
+			{H0, _Entropy} = ar_mine:spora_h0_with_entropy(BDS, B#block.nonce, Height),
 			{ok, RecallByte} = ar_mine:pick_recall_byte(H0, PrevB#block.indep_hash,
 					SearchSpaceUpperBound),
 			{BlockStart, BlockEnd, TXRoot} = ar_block_index:get_block_bounds(RecallByte),
 			case RecallByte >= B#block.packing_2_6_threshold of
 				true ->
 					?debugFmt("Mined a chunk above the 2.6 packing threshold. "
-							"Recall byte: ~B. Previous block: ~s.",
-							[RecallByte, ar_util:encode(PrevB#block.indep_hash)]),
+							"Computed recall byte: ~B, block's recall byte: ~p. "
+							"Height: ~B. Previous block: ~s. "
+							"Computed search space upper bound: ~B. "
+							"Computed data segment: ~s. Block start: ~B. Block end: ~B. "
+							"TX root: ~s.",
+							[RecallByte, B#block.recall_byte, Height,
+							ar_util:encode(PrevB#block.indep_hash), SearchSpaceUpperBound,
+							ar_util:encode(BDS), BlockStart, BlockEnd,
+							ar_util:encode(TXRoot)]),
 					?assertEqual(true, ar_poa:validate(BlockStart, RecallByte, TXRoot,
 							BlockEnd - BlockStart, PoA, B#block.packing_2_6_threshold,
 							B#block.strict_data_split_threshold, B#block.reward_addr));
 				false ->
-					?debugFmt("Mined a chunk above the 2.5 packing threshold. "
-							"Recall byte: ~B. Previous block: ~s.",
-							[RecallByte, ar_util:encode(PrevB#block.indep_hash)]),
+					?debugFmt("Mined a chunk below the 2.6 packing threshold. "
+							"Computed recall byte: ~B, block's recall byte: ~p. "
+							"Height: ~B. Previous block: ~s. "
+							"Computed search space upper bound: ~B. "
+							"Computed data segment: ~s. Block start: ~B. Block end: ~B. "
+							"TX root: ~s.",
+							[RecallByte, B#block.recall_byte, Height,
+							ar_util:encode(PrevB#block.indep_hash), SearchSpaceUpperBound,
+							ar_util:encode(BDS), BlockStart, BlockEnd,
+							ar_util:encode(TXRoot)]),
 					?assertEqual(true, ar_poa:validate(BlockStart, RecallByte, TXRoot,
 							BlockEnd - BlockStart, PoA, B#block.packing_2_6_threshold,
 							B#block.strict_data_split_threshold, B#block.reward_addr))
@@ -743,8 +764,7 @@ test_packs_chunks_depending_on_packing_threshold() ->
 			maps:values(StrictProofs))]),
 	slave_wait_until_syncs_chunks([P || {_, _, _, P} <- lists:flatten(maps:values(V1Proofs))]),
 	maps:map(
-		fun(TXID, [{B, _TX, Chunks, _} | _] = Proofs) ->
-			TXEndOffset = element(1, element(4, lists:last(Proofs))),
+		fun(TXID, [{_B, _TX, Chunks, _} | _] = Proofs) ->
 			BigChunks = lists:filter(fun(C) -> byte_size(C) == 262144 end, Chunks),
 			Length = length(Chunks),
 			LastSize = byte_size(lists:last(Chunks)),
@@ -757,8 +777,7 @@ test_packs_chunks_depending_on_packing_threshold() ->
 							andalso LastSize < 262144
 							andalso SecondLastSize < 262144
 							andalso SecondLastSize >= DataPathSize
-							andalso LastSize + SecondLastSize > 262144)
-					orelse TXEndOffset =< B#block.strict_data_split_threshold of
+							andalso LastSize + SecondLastSize > 262144) of
 				true ->
 					?debugMsg("Asserting random split which turned out strict."),
 					ExpectedData = ar_util:encode(binary:list_to_bin(Chunks)),
@@ -858,15 +877,13 @@ get_records_with_proofs(B, TX, Chunks) ->
 
 setup_nodes() ->
 	setup_nodes(ar_wallet:to_address(ar_wallet:new_ecdsa()),
-			ar_wallet:to_address(slave_call(ar_wallet, new_ecdsa, [])), 0).
+			ar_wallet:to_address(slave_call(ar_wallet, new_ecdsa, []))).
 
-setup_nodes(MasterAddr, SlaveAddr, StrictDataSplitThreshold) ->
+setup_nodes(MasterAddr, SlaveAddr) ->
 	Wallet = {_, Pub} = ar_wallet:new(),
 	[B0] = ar_weave:init([{ar_wallet:to_address(Pub), ?AR(200), <<>>}]),
-	B02 = B0#block{ strict_data_split_threshold = StrictDataSplitThreshold },
-	B03 = B02#block{ indep_hash = ar_block:indep_hash(B02) },
-	{Master, _} = start(B03, MasterAddr),
-	{Slave, _} = slave_start(B03, SlaveAddr),
+	{Master, _} = start(B0, MasterAddr),
+	{Slave, _} = slave_start(B0, SlaveAddr),
 	connect_to_slave(),
 	{Master, Slave, Wallet}.
 
@@ -878,52 +895,80 @@ v1_tx(Wallet) ->
 
 tx(Wallet, SplitType, Format) ->
 	case {SplitType, Format} of
-		{{fixed_data, Data, DataRoot, Chunks}, _} ->
-			{sign_tx(Wallet, #{ data_size => byte_size(Data),
-					data_root => DataRoot, last_tx => get_tx_anchor(master) }), Chunks};
+		{{fixed_data, DataRoot, Chunks}, v2} ->
+			Data = binary:list_to_bin(Chunks),
+			{sign_tx(Wallet, #{ data_size => byte_size(Data), data_root => DataRoot,
+					last_tx => get_tx_anchor(master) }), Chunks};
+		{{fixed_data, DataRoot, Chunks}, v1} ->
+			Data = binary:list_to_bin(Chunks),
+			{sign_tx(Wallet, #{ data_size => byte_size(Data), data_root => DataRoot,
+					last_tx => get_tx_anchor(master), data => Data }), Chunks};
 		{original_split, v1} ->
-			%% Make sure v1 data does not end with a digit, otherwise it's malleable.
-			Data = << (crypto:strong_rand_bytes(rand:uniform(1024 * 1024)))/binary, <<"a">>/binary >>,
-			{_, Chunks} = original_split(Data),
+			{_, Chunks} = generate_random_original_v1_split(),
+			Data = binary:list_to_bin(Chunks),
 			{sign_v1_tx(Wallet, #{ data => Data, last_tx => get_tx_anchor(master) }), Chunks};
+		{original_split, v2} ->
+			{DataRoot, Chunks} = generate_random_original_split(),
+			Data = binary:list_to_bin(Chunks),
+			{sign_tx(Wallet, #{ data_size => byte_size(Data), data_root => DataRoot,
+					last_tx => get_tx_anchor(master) }), Chunks};
 		{{custom_split, ChunkNumber}, v2} ->
-			Chunks = lists:foldl(
-				fun(_, Chunks) ->
-					RandomSize =
-						case rand:uniform(3) of
-							1 ->
-								?DATA_CHUNK_SIZE;
-							_ ->
-								OneThird = ?DATA_CHUNK_SIZE div 3,
-								OneThird + rand:uniform(?DATA_CHUNK_SIZE - OneThird) - 1
-						end,
-					Chunk = crypto:strong_rand_bytes(RandomSize),
-					[Chunk | Chunks]
-				end,
-				[],
-				lists:seq(1, case ChunkNumber of
-						random -> rand:uniform(5); _ -> ChunkNumber end)),
-			SizedChunkIDs = ar_tx:sized_chunks_to_sized_chunk_ids(
-				ar_tx:chunks_to_size_tagged_chunks(Chunks)
-			),
-			{DataRoot, _} = ar_merkle:generate_tree(SizedChunkIDs),
+			{DataRoot, Chunks} = generate_random_split(ChunkNumber),
 			TX = sign_tx(Wallet, #{ data_size => byte_size(binary:list_to_bin(Chunks)),
 					last_tx => get_tx_anchor(master), data_root => DataRoot }),
 			{TX, Chunks};
-		{original_split, v2} ->
-			Data = crypto:strong_rand_bytes(rand:uniform(3 * ?DATA_CHUNK_SIZE)),
-			{DataRoot, Chunks} = v2_standard_split(Data),
+		{standard_split, v2} ->
+			{DataRoot, Chunks} = generate_random_standard_split(),
+			Data = binary:list_to_bin(Chunks),
 			TX = sign_tx(Wallet, #{ data_size => byte_size(Data),
 					last_tx => get_tx_anchor(master), data_root => DataRoot }),
 			{TX, Chunks};
 		{{original_split, ChunkNumber}, v2} ->
-			Data = crypto:strong_rand_bytes(
-					(ChunkNumber - 1) * ?DATA_CHUNK_SIZE + rand:uniform(?DATA_CHUNK_SIZE)),
-			{DataRoot, Chunks} = original_split(Data),
+			{DataRoot, Chunks} = generate_random_original_split(ChunkNumber),
+			Data = binary:list_to_bin(Chunks),
 			TX = sign_tx(Wallet, #{ data_size => byte_size(Data),
 					last_tx => get_tx_anchor(master), data_root => DataRoot }),
 			{TX, Chunks}
 	end.
+
+generate_random_split(ChunkCount) ->
+	Chunks = lists:foldl(
+		fun(_, Chunks) ->
+			RandomSize =
+				case rand:uniform(3) of
+					1 ->
+						?DATA_CHUNK_SIZE;
+					_ ->
+						OneThird = ?DATA_CHUNK_SIZE div 3,
+						OneThird + rand:uniform(?DATA_CHUNK_SIZE - OneThird) - 1
+				end,
+			Chunk = crypto:strong_rand_bytes(RandomSize),
+			[Chunk | Chunks]
+		end,
+		[],
+		lists:seq(1, case ChunkCount of random -> rand:uniform(5); _ -> ChunkCount end)),
+	SizedChunkIDs = ar_tx:sized_chunks_to_sized_chunk_ids(
+			ar_tx:chunks_to_size_tagged_chunks(Chunks)),
+	{DataRoot, _} = ar_merkle:generate_tree(SizedChunkIDs),
+	{DataRoot, Chunks}.
+
+generate_random_original_v1_split() ->
+	%% Make sure v1 data does not end with a digit, otherwise it's malleable.
+	Data = << (crypto:strong_rand_bytes(rand:uniform(1024 * 1024)))/binary, <<"a">>/binary >>,
+	original_split(Data).
+
+generate_random_original_split() ->
+	Data = << (crypto:strong_rand_bytes(rand:uniform(1024 * 1024)))/binary >>,
+	original_split(Data).
+
+generate_random_standard_split() ->
+	Data = crypto:strong_rand_bytes(rand:uniform(3 * ?DATA_CHUNK_SIZE)),
+	v2_standard_split(Data).
+
+generate_random_original_split(ChunkCount) ->
+	RandomSize = (ChunkCount - 1) * ?DATA_CHUNK_SIZE + rand:uniform(?DATA_CHUNK_SIZE),
+	Data = crypto:strong_rand_bytes(RandomSize),
+	original_split(Data).
 
 %% @doc Split the way v1 transactions are split.
 original_split(Data) ->
@@ -1037,8 +1082,8 @@ get_tx_offset_from_slave(TXID) ->
 		path => "/tx/" ++ binary_to_list(ar_util:encode(TXID)) ++ "/offset"
 	}).
 
-post_random_blocks(Wallet, V2Split) ->
-	post_blocks(Wallet, V2Split,
+post_random_blocks(Wallet) ->
+	post_blocks(Wallet,
 		[
 			[v1],
 			empty,
@@ -1057,12 +1102,10 @@ post_random_blocks(Wallet, V2Split) ->
 		]
 	).
 
-post_blocks(Wallet, V2Split, BlockMap) ->
+post_blocks(Wallet, BlockMap) ->
 	FixedChunks = [crypto:strong_rand_bytes(256 * 1024) || _ <- lists:seq(1, 4)],
-	Data = iolist_to_binary(lists:foldl(fun(Chunk, Acc) -> [Acc | Chunk] end, [], FixedChunks)),
 	SizedChunkIDs = ar_tx:sized_chunks_to_sized_chunk_ids(
-		ar_tx:chunks_to_size_tagged_chunks(FixedChunks)
-	),
+			ar_tx:chunks_to_size_tagged_chunks(FixedChunks)),
 	{DataRoot, _} = ar_merkle:generate_tree(SizedChunkIDs),
 	lists:foldl(
 		fun
@@ -1076,15 +1119,15 @@ post_blocks(Wallet, V2Split, BlockMap) ->
 						(v1) ->
 							{v1_tx(Wallet), v1};
 						(v2) ->
-							{tx(Wallet, V2Split), v2};
+							{tx(Wallet, original_split), v2};
 						(v2_no_data) -> % same as v2 but its data won't be submitted
 							{tx(Wallet, {custom_split, random}), v2_no_data};
 						(v2_standard_split) ->
-							{tx(Wallet, original_split), v2_standard_split};
+							{tx(Wallet, standard_split), v2_standard_split};
 						(empty_tx) ->
 							{tx(Wallet, {custom_split, 0}), empty_tx};
 						(fixed_data) ->
-							{tx(Wallet, {fixed_data, Data, DataRoot, FixedChunks}), fixed_data}
+							{tx(Wallet, {fixed_data, DataRoot, FixedChunks}), fixed_data}
 					end,
 					TXMap
 				),

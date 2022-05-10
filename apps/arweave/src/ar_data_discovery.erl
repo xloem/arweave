@@ -56,11 +56,13 @@ get_bucket_peers(Bucket) ->
 get_bucket_peers(Bucket, Cursor, Peers) ->
 	case ets:next(?MODULE, Cursor) of
 		'$end_of_table' ->
-			pick_peers(Peers, ?QUERY_BEST_PEERS_COUNT);
+			UniquePeers = sets:to_list(sets:from_list(Peers)),
+			pick_peers(UniquePeers, ?QUERY_BEST_PEERS_COUNT);
 		{Bucket, _Share, Peer} = Key ->
 			get_bucket_peers(Bucket, Key, [Peer | Peers]);
 		_ ->
-			pick_peers(Peers, ?QUERY_BEST_PEERS_COUNT)
+			UniquePeers = sets:to_list(sets:from_list(Peers)),
+			pick_peers(UniquePeers, ?QUERY_BEST_PEERS_COUNT)
 	end.
 
 %%%===================================================================

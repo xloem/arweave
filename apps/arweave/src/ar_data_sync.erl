@@ -304,6 +304,7 @@ handle_cast({join, RecentBI, Packing_2_5_Threshold, Packing_2_6_Threshold,
 		{_, {_H, Offset, _TXRoot}} ->
 			PreviousWeaveSize = element(2, hd(CurrentBI)),
 			{ok, OrphanedDataRoots} = remove_orphaned_data(State, Offset, PreviousWeaveSize),
+			ar_chunk_storage:cut(Offset),
 			ar_sync_record:cut(Offset, ?MODULE),
 			reset_orphaned_data_roots_disk_pool_timestamps(OrphanedDataRoots)
 	end,
@@ -317,7 +318,6 @@ handle_cast({join, RecentBI, Packing_2_5_Threshold, Packing_2_6_Threshold,
 			strict_data_split_threshold = StrictDataSplitThreshold
 		},
 	ets:insert(ar_data_sync_state, {strict_data_split_threshold, StrictDataSplitThreshold}),
-	gen_server:cast(?MODULE, collect_sync_intervals),
 	run_sync_jobs(),
 	store_sync_state(State2),
 	{noreply, State2};
@@ -357,6 +357,7 @@ handle_cast({add_tip_block, Packing_2_5_Threshold, Packing_2_6_Threshold,
 	ets:insert(ar_data_sync_state, {disk_pool_size, DiskPoolSize2}),
 	add_block_data_roots_to_disk_pool(AddedDataRoots),
 	reset_orphaned_data_roots_disk_pool_timestamps(OrphanedDataRoots),
+	ar_chunk_storage:cut(BlockStartOffset),
 	ar_sync_record:cut(BlockStartOffset, ?MODULE),
 	State2 = State#sync_data_state{
 		weave_size = WeaveSize,
@@ -718,22 +719,17 @@ handle_cast({remove_tx_data, TXID, TXSize, End, Cursor}, State) ->
 							StrictDataSplitThreshold),
 					PaddedOffset = get_chunk_padded_offset(AbsoluteEndOffset,
 							StrictDataSplitThreshold),
-					case ar_sync_record:is_recorded(PaddedOffset, ?MODULE) of
-						{true, _Packing} ->
-							%% 1) store updated sync record
-							%% 2) remove chunk
-							%% 3) update chunks_index
-							%%
-							%% The order is important - in case the VM crashes,
-							%% we will not report false positives to peers,
-							%% and the chunk can still be removed upon retry.
-							ok = ar_sync_record:delete(PaddedOffset,
-									PaddedStartOffset, ?MODULE),
-							ok = ar_chunk_storage:delete(PaddedOffset),
-							ok = ar_kv:delete(ChunksIndex, Key);
-						_ ->
-							ok
-					end,
+					%% 1) store updated sync record
+					%% 2) remove chunk
+					%% 3) update chunks_index
+					%%
+					%% The order is important - in case the VM crashes,
+					%% we will not report false positives to peers,
+					%% and the chunk can still be removed upon retry.
+					ok = ar_sync_record:delete(PaddedOffset,
+							PaddedStartOffset, ?MODULE),
+					ok = ar_chunk_storage:delete(PaddedOffset),
+					ok = ar_kv:delete(ChunksIndex, Key),
 					gen_server:cast(?MODULE,
 						{remove_tx_data, TXID, TXSize, End, AbsoluteEndOffset + 1}),
 					{noreply, State#sync_data_state{
@@ -1373,6 +1369,7 @@ may_be_run_sync_jobs() ->
 	end.
 
 run_sync_jobs() ->
+	gen_server:cast(?MODULE, collect_sync_intervals),
 	{ok, Config} = application:get_env(arweave, config),
 	lists:foreach(
 		fun(_SyncingJobNumber) ->
@@ -1933,7 +1930,8 @@ validate_data_path(DataRoot, Offset, TXSize, DataPath, Chunk) ->
 	ValidatePathResult =
 		case ar_merkle:validate_path_strict_data_split(DataRoot, Offset, TXSize, DataPath) of
 			false ->
-				case ar_merkle:validate_path_strict_borders(DataRoot, Offset, TXSize, DataPath) of
+				case ar_merkle:validate_path_strict_borders(DataRoot, Offset, TXSize,
+						DataPath) of
 					false ->
 						false;
 					R ->
@@ -2270,7 +2268,8 @@ pack_and_store_fetched_chunk(Args, State) ->
 	DataPathHash = crypto:hash(sha256, DataPath),
 	case AbsoluteOffset > DiskPoolThreshold of
 		true ->
-			?LOG_DEBUG([{event, storing_fetched_chunk_in_disk_pool}, {offset, AbsoluteOffset}]),
+			?LOG_DEBUG([{event, storing_fetched_chunk_in_disk_pool},
+					{offset, AbsoluteOffset}]),
 			ChunkDataKey = get_chunk_data_key(DataPathHash),
 			Write = write_disk_pool_chunk(ChunkDataKey, UnpackedChunk, DataPath, State),
 			case Write of
@@ -2280,7 +2279,8 @@ pack_and_store_fetched_chunk(Args, State) ->
 					case add_chunk_to_disk_pool(Args2, State) of
 						ok ->
 							case update_chunks_index({AbsoluteOffset, Offset, ChunkDataKey,
-										TXRoot, DataRoot, TXPath, ChunkSize, unpacked}, State) of
+										TXRoot, DataRoot, TXPath, ChunkSize, unpacked},
+										State) of
 								ok ->
 									{noreply, State};
 								{error, Reason} ->
