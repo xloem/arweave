@@ -158,7 +158,7 @@ delete(Start, End, Size, Map) ->
 %%%===================================================================
 
 buckets_test() ->
-	Size = ?DEFAULT_SYNC_BUCKET_SIZE,
+	Size = 10000000000,
 	B1 = new(),
 	?assertException(throw, uncompressable_buckets, serialize(B1, 10)),
 	{B1, S1} = serialize(B1, 20),
