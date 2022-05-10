@@ -715,6 +715,7 @@ test_packs_chunks_depending_on_packing_threshold() ->
 							ar_util:encode(PrevB#block.indep_hash), SearchSpaceUpperBound,
 							ar_util:encode(BDS), BlockStart, BlockEnd,
 							ar_util:encode(TXRoot)]),
+					?assertEqual(RecallByte, B#block.recall_byte),
 					?assertEqual(true, ar_poa:validate(BlockStart, RecallByte, TXRoot,
 							BlockEnd - BlockStart, PoA, B#block.packing_2_6_threshold,
 							B#block.strict_data_split_threshold, B#block.reward_addr));
@@ -729,6 +730,7 @@ test_packs_chunks_depending_on_packing_threshold() ->
 							ar_util:encode(PrevB#block.indep_hash), SearchSpaceUpperBound,
 							ar_util:encode(BDS), BlockStart, BlockEnd,
 							ar_util:encode(TXRoot)]),
+					?assertEqual(RecallByte, B#block.recall_byte),
 					?assertEqual(true, ar_poa:validate(BlockStart, RecallByte, TXRoot,
 							BlockEnd - BlockStart, PoA, B#block.packing_2_6_threshold,
 							B#block.strict_data_split_threshold, B#block.reward_addr))
@@ -736,7 +738,7 @@ test_packs_chunks_depending_on_packing_threshold() ->
 			B
 		end,
 		LastB_2_5,
-		lists:seq(11, 20)
+		lists:seq(10, 20)
 	),
 	?assertEqual(0, LastB#block.packing_2_6_threshold),
 	?debugMsg("Asserting synced data with the strict splits."),

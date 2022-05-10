@@ -4,11 +4,10 @@
 -include_lib("arweave/include/ar_config.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
--import(ar_test_node, [
-		start/1, slave_start/1, disconnect_from_slave/0, connect_to_slave/0,
+-import(ar_test_node, [start/1, slave_start/1, disconnect_from_slave/0, connect_to_slave/0,
 		get_tx_anchor/0, sign_tx/2, assert_post_tx_to_slave/1, slave_mine/0,
 		assert_slave_wait_until_height/1, slave_wait_until_height/1, wait_until_height/1,
-		read_block_when_stored/1, slave_peer/0]).
+		read_block_when_stored/1]).
 
 polling_test_() ->
 	{timeout, 60, fun test_polling/0}.
@@ -31,7 +30,6 @@ test_polling() ->
 			lists:seq(1, 9)
 		),
 	connect_to_slave(),
-	set_slave_as_trusted_peer(),
 	wait_until_height(9),
 	lists:foreach(
 		fun(Height) ->
@@ -69,8 +67,3 @@ test_polling() ->
 	?assertEqual(SH13, MH13_1),
 	?assertEqual(SH12, MH12_1),
 	?assertEqual(SH11, MH11_1).
-
-set_slave_as_trusted_peer() ->
-	{ok, Config} = application:get_env(arweave, config),
-	Config2 = Config#config{ peers = [slave_peer()] },
-	application:set_env(arweave, config, Config2).

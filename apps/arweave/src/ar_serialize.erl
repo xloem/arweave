@@ -186,7 +186,7 @@ block_to_json_struct(
 				{block_size, JSONBlockSize}, {cumulative_diff, JSONCDiff},
 				{hash_list_merkle, ar_util:encode(MR)}, {poa, poa_to_json_struct(POA)}],
 	JSONElements2 =
-		case Height < ?FORK_1_6 of
+		case Height < ar_fork:height_1_6() of
 			true ->
 				KeysToDelete = [cumulative_diff, hash_list_merkle],
 				delete_keys(KeysToDelete, JSONElements);
@@ -756,9 +756,10 @@ json_struct_to_block({BlockStruct}) ->
 				TagsValue
 		end,
 	Fork_1_8 = ar_fork:height_1_8(),
+	Fork_1_6 = ar_fork:height_1_6(),
 	CDiff =
 		case find_value(<<"cumulative_diff">>, BlockStruct) of
-			_ when Height < ?FORK_1_6 -> 0;
+			_ when Height < Fork_1_6 -> 0;
 			undefined -> 0; % In case it's an invalid block (in the pre-fork format).
 			BinaryCDiff when Height >= Fork_1_8 -> binary_to_integer(BinaryCDiff);
 			CD -> CD
@@ -770,7 +771,7 @@ json_struct_to_block({BlockStruct}) ->
 		end,
 	MR =
 		case find_value(<<"hash_list_merkle">>, BlockStruct) of
-			_ when Height < ?FORK_1_6 -> <<>>;
+			_ when Height < Fork_1_6 -> <<>>;
 			undefined -> <<>>; % In case it's an invalid block (in the pre-fork format).
 			R -> ar_util:decode(R)
 		end,
@@ -1223,7 +1224,19 @@ binary_to_signature_type(List) ->
 %%% Tests: ar_serialize
 
 block_to_binary_test_() ->
-	{timeout, 10, fun test_block_to_binary/0}.
+	%% Set the mainnet values here because we are using the mainnet fixtures.
+	ar_test_node:test_with_mocked_functions([
+			{ar_fork, height_1_6, fun() -> 95000 end},
+			{ar_fork, height_1_7, fun() -> 235200 end},
+			{ar_fork, height_1_8, fun() -> 269510 end},
+			{ar_fork, height_1_9, fun() -> 315700 end},
+			{ar_fork, height_2_0, fun() -> 422250 end},
+			{ar_fork, height_2_2, fun() -> 552180 end},
+			{ar_fork, height_2_3, fun() -> 591140 end},
+			{ar_fork, height_2_4, fun() -> 633720 end},
+			{ar_fork, height_2_5, fun() -> 812970 end},
+			{ar_fork, height_2_6, fun() -> infinity end}],
+		fun test_block_to_binary/0).
 
 test_block_to_binary() ->
 	Dir = filename:dirname(?FILE),

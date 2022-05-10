@@ -12,6 +12,7 @@
 -record(state, {
 	peer,
 	polling_frequency_ms,
+	ref,
 	pause = false
 }).
 
@@ -30,13 +31,13 @@ init([]) ->
 	process_flag(trap_exit, true),
 	{ok, Config} = application:get_env(arweave, config),
 	[ok] = ar_events:subscribe([node_state]),
+	State = #state{ polling_frequency_ms = Config#config.polling * 1000 },
 	case ar_node:is_joined() of
 		true ->
-			handle_node_state_initialized();
+			{ok, handle_node_state_initialized(State)};
 		false ->
-			ok
-	end,
-	{ok, #state{ polling_frequency_ms = Config#config.polling * 1000 }}.
+			{ok, State}
+	end.
 
 handle_call(Request, _From, State) ->
 	?LOG_WARNING("event: unhandled_call, request: ~p", [Request]),
@@ -48,18 +49,19 @@ handle_cast(pause, State) ->
 handle_cast(resume, #state{ pause = false } = State) ->
 	{noreply, State};
 handle_cast(resume, State) ->
-	gen_server:cast(self(), poll),
-	{noreply, State#state{ pause = false }};
+	Ref = make_ref(),
+	gen_server:cast(self(), {poll, Ref}),
+	{noreply, State#state{ pause = false, ref = Ref }};
 
-handle_cast(poll, #state{ peer = undefined } = State) ->
-	ar_util:cast_after(1000, self(), poll),
+handle_cast({poll, _Ref}, #state{ pause = true } = State) ->
 	{noreply, State};
-handle_cast(poll, #state{ pause = true } = State) ->
-	{noreply, State};
-handle_cast(poll, #state{ peer = Peer, polling_frequency_ms = FrequencyMs } = State) ->
+handle_cast({poll, _Ref}, #state{ peer = undefined } = State) ->
+	{noreply, State#state{ pause = true }};
+handle_cast({poll, Ref}, #state{ ref = Ref, peer = Peer,
+		polling_frequency_ms = FrequencyMs } = State) ->
 	case ar_http_iface_client:get_recent_hash_list_diff(Peer) of
 		{ok, in_sync} ->
-			ar_util:cast_after(FrequencyMs, self(), poll),
+			ar_util:cast_after(FrequencyMs, self(), {poll, Ref}),
 			{noreply, State};
 		{ok, {H, TXIDs}} ->
 			case ar_ignore_registry:member(H) of
@@ -85,7 +87,7 @@ handle_cast(poll, #state{ peer = Peer, polling_frequency_ms = FrequencyMs } = St
 							ok
 					end
 			end,
-			ar_util:cast_after(FrequencyMs, self(), poll),
+			ar_util:cast_after(FrequencyMs, self(), {poll, Ref}),
 			{noreply, State};
 		{error, node_state_not_initialized} ->
 			{noreply, State};
@@ -99,23 +101,27 @@ handle_cast(poll, #state{ peer = Peer, polling_frequency_ms = FrequencyMs } = St
 					{peer, ar_util:format_peer(Peer)}, {error, io_lib:format("~p", [Error])}]),
 			{noreply, State#state{ pause = true }}
 	end;
+handle_cast({poll, _Ref}, State) ->
+	{noreply, State};
 
-handle_cast({set_peer, Peer}, #state{ pause = Pause } = State) ->
-	case Pause of
-		true ->
-			gen_server:cast(self(), poll);
-		false ->
-			ok
-	end,
-	{noreply, State#state{ peer = Peer, pause = false }};
+handle_cast({set_peer, Peer}, #state{ ref = Ref, pause = Pause } = State) ->
+	Ref2 =
+		case Pause of
+			true ->
+				Ref3 = make_ref(),
+				gen_server:cast(self(), {poll, Ref3}),
+				Ref3;
+			false ->
+				Ref
+		end,
+	{noreply, State#state{ peer = Peer, pause = false, ref = Ref2 }};
 
 handle_cast(Msg, State) ->
 	?LOG_ERROR([{event, unhandled_cast}, {module, ?MODULE}, {message, Msg}]),
 	{noreply, State}.
 
 handle_info({event, node_state, initialized}, State) ->
-	handle_node_state_initialized(),
-	{noreply, State};
+	{noreply, handle_node_state_initialized(State)};
 
 handle_info({event, node_state, _}, State) ->
 	{noreply, State};
@@ -138,8 +144,10 @@ terminate(_Reason, _State) ->
 %%% Private functions.
 %%%===================================================================
 
-handle_node_state_initialized() ->
-	gen_server:cast(self(), poll).
+handle_node_state_initialized(State) ->
+	Ref = make_ref(),
+	gen_server:cast(self(), {poll, Ref}),
+	State#state{ ref = Ref }.
 
 get_missing_tx_indices(TXIDs) ->
 	get_missing_tx_indices(TXIDs, 0).
