@@ -4,8 +4,8 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -import(ar_test_node, [
-		start/1, slave_start/1, start/2, slave_start/2, connect_to_slave/0,
-		disconnect_from_slave/0, assert_post_tx_to_slave/1,
+		start/1, slave_start/1, start/2, slave_start/2, connect_to_slave/0, slave_peer/0,
+		master_peer/0, disconnect_from_slave/0, assert_post_tx_to_slave/1,
 		slave_mine/0, assert_slave_wait_until_height/1, wait_until_height/1,
 		slave_wait_until_height/1, sign_tx/2, read_block_when_stored/1, slave_call/3]).
 
@@ -139,25 +139,17 @@ test_invalid_block_with_high_cumulative_difficulty() ->
 	?assertNotEqual(H2, H1),
 	B1 = read_block_when_stored(H2),
 	B2 = fake_block_with_strong_cumulative_difficulty(B1, 10000000000000000),
-	?assertMatch(
-	    {ok, {{<<"200">>, _}, _, _, _, _}},
-	    ar_http_iface_client:send_block_json({127, 0, 0, 1, 1984}, B2#block.indep_hash,
-				block_to_json(B2))
-	),
+	?assertMatch({ok, {{<<"200">>, _}, _, _, _, _}},
+			ar_http_iface_client:send_block_binary(master_peer(), B2#block.indep_hash,
+					ar_serialize:block_to_binary(B2))),
 	timer:sleep(500),
 	[{H1, _, _} | _] = slave_wait_until_height(1),
 	ar_node:mine(),
 	%% Assert the nodes have continued building on the original fork.
 	[{H3, _, _} | _] = slave_wait_until_height(2),
 	?assertNotEqual(B2#block.indep_hash, H3),
-	{_Peer, B3, _Time, _Size} = ar_http_iface_client:get_block_shadow(
-			[{127, 0, 0, 1, 1983}], 1),
+	{_Peer, B3, _Time, _Size} = ar_http_iface_client:get_block_shadow(1, slave_peer(), binary),
 	?assertEqual(H2, B3#block.indep_hash).
-
-block_to_json(B) ->
-	{BlockProps} = ar_serialize:block_to_json_struct(B),
-	PostProps = [{<<"new_block">>, {BlockProps}}],
-	ar_serialize:jsonify({PostProps}).
 
 fake_block_with_strong_cumulative_difficulty(B, CDiff) ->
 	#block{

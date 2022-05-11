@@ -5,14 +5,13 @@
 -module(ar_http_iface_client).
 
 -export([send_block_json/3, send_block_binary/3, send_block_binary/4, send_tx_json/3,
-		send_tx_binary/3, send_block_announcement/2,
-		get_block_shadow/2, get_block/3, get_tx/3, get_txs/3, get_tx_from_remote_peer/2,
-		get_tx_data/2, get_wallet_list_chunk/2, get_wallet_list_chunk/3, get_wallet_list/2,
-		add_peer/1, get_info/1, get_info/2,
-		get_peers/1, get_time/2, get_height/1, get_block_index/1, get_block_index/2,
-		get_sync_record/1, get_sync_record/3, get_chunk_json/3, get_chunk_binary/3,
-		get_mempool/1, get_sync_buckets/1, get_recent_hash_list/1,
-		get_recent_hash_list_diff/1]).
+		send_tx_binary/3, send_block_announcement/2, get_block_shadow/2, get_block_shadow/3,
+		get_block/3, get_tx/3, get_txs/3, get_tx_from_remote_peer/2, get_tx_data/2,
+		get_wallet_list_chunk/2, get_wallet_list_chunk/3, get_wallet_list/2,
+		add_peer/1, get_info/1, get_info/2, get_peers/1, get_time/2, get_height/1,
+		get_block_index/1, get_block_index/2, get_sync_record/1, get_sync_record/3,
+		get_chunk_json/3, get_chunk_binary/3, get_mempool/1, get_sync_buckets/1,
+		get_recent_hash_list/1, get_recent_hash_list_diff/1]).
 
 -include_lib("arweave/include/ar.hrl").
 -include_lib("arweave/include/ar_config.hrl").
@@ -117,28 +116,32 @@ get_block(Peer, H, TXIndices) ->
 			{B, Time, Size}
 	end.
 
-%% @doc Retreive a block shadow by hash or height from remote peers.
+%% @doc Retreive a block shadow by hash or height from one of the given peers.
 get_block_shadow([], _ID) ->
 	unavailable;
 get_block_shadow(Peers, ID) ->
 	Peer = lists:nth(rand:uniform(min(5, length(Peers))), Peers),
 	Release = ar_peers:get_peer_release(Peer),
 	Encoding = case Release >= 42 of true -> binary; _ -> json end,
-	case handle_block_response(Peer, Encoding,
-			ar_http:req(#{
-				method => get,
-				peer => Peer,
-				path => get_block_path(ID, Encoding),
-				headers => p2p_headers(),
-				connect_timeout => 500,
-				timeout => 30 * 1000,
-				limit => ?MAX_BODY_SIZE
-			})) of
+	case get_block_shadow(ID, Peer, Encoding) of
 		not_found ->
 			get_block_shadow(Peers -- [Peer], ID);
 		{ok, B, Time, Size} ->
 			{Peer, B, Time, Size}
 	end.
+
+%% @doc Retreive a block shadow by hash or height from the given peer.
+get_block_shadow(ID, Peer, Encoding) ->
+	handle_block_response(Peer, Encoding,
+		ar_http:req(#{
+			method => get,
+			peer => Peer,
+			path => get_block_path(ID, Encoding),
+			headers => p2p_headers(),
+			connect_timeout => 500,
+			timeout => 30 * 1000,
+			limit => ?MAX_BODY_SIZE
+		})).
 
 %% @doc Generate an appropriate URL for a block by its identifier.
 get_block_path({ID, _, _}, Encoding) ->

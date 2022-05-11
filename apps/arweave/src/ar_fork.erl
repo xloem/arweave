@@ -83,7 +83,7 @@ height_2_5() ->
 
 -ifdef(FORKS_RESET).
 height_2_6() ->
-	infinity.
+	0. % infinity.
 -else.
 height_2_6() ->
 	infinity.

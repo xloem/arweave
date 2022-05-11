@@ -4,9 +4,9 @@
 -include_lib("arweave/include/ar_config.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
--import(ar_test_node, [start/1, slave_stop/0, slave_start/1, connect_to_slave/0,
-		get_tx_anchor/0, disconnect_from_slave/0, wait_until_height/1,
-		wait_until_receives_txs/1, sign_tx/2, post_tx_json_to_master/1,
+-import(ar_test_node, [start/1, start/2, slave_stop/0, slave_start/1, slave_start/2,
+		connect_to_slave/0, get_tx_anchor/0, disconnect_from_slave/0, wait_until_height/1,
+		master_peer/0, wait_until_receives_txs/1, sign_tx/2, post_tx_json_to_master/1,
 		assert_slave_wait_until_receives_txs/1, slave_wait_until_height/1,
 		read_block_when_stored/1, read_block_when_stored/2, master_peer/0, slave_peer/0,
 		slave_mine/0, assert_slave_wait_until_height/1, slave_call/3,
@@ -351,8 +351,8 @@ get_time_test() ->
 get_block_by_hash_test() ->
 	[B0] = ar_weave:init([]),
 	start(B0),
-	{_Peer, B1, _Time, _Size} = ar_http_iface_client:get_block_shadow([{127, 0, 0, 1, 1984}],
-			B0#block.indep_hash),
+	{_Peer, B1, _Time, _Size} = ar_http_iface_client:get_block_shadow(B0#block.indep_hash,
+			master_peer(), binary),
 	?assertEqual(B0#block{ hash_list = unset, size_tagged_txs = unset }, B1).
 
 %% @doc Ensure that blocks can be received via a height.
@@ -360,8 +360,8 @@ get_block_by_height_test() ->
 	[B0] = ar_weave:init(),
 	{_Node, _} = start(B0),
 	wait_until_height(0),
-	{_Peer, B1, _Time, _Size} = ar_http_iface_client:get_block_shadow(
-			[{127, 0, 0, 1, 1984}], 0),
+	{_Peer, B1, _Time, _Size} = ar_http_iface_client:get_block_shadow(0, master_peer(),
+			binary),
 	?assertEqual(
 		B0#block{ hash_list = unset, wallet_list = not_set, size_tagged_txs = unset },
 		B1#block{ wallet_list = not_set }
@@ -378,16 +378,15 @@ test_get_current_block() ->
 		100,
 		2000
 	),
-	Peer = {127, 0, 0, 1, 1984},
+	Peer = master_peer(),
 	BI = ar_http_iface_client:get_block_index([Peer]),
-	{_Peer, B1, _Time, _Size} = ar_http_iface_client:get_block_shadow([Peer], hd(BI)),
+	{_Peer, B1, _Time, _Size} = ar_http_iface_client:get_block_shadow(hd(BI), Peer, binary),
 	?assertEqual(B0#block{ hash_list = unset, size_tagged_txs = unset }, B1),
 	{ok, {{<<"200">>, _}, _, Body, _, _}} =
-		ar_http:req(#{method => get, peer => {127, 0, 0, 1, 1984}, path => "/block/current"}),
-	?assertEqual(
-		B0#block.indep_hash,
-		(ar_serialize:json_struct_to_block(Body))#block.indep_hash
-	).
+		ar_http:req(#{method => get, peer => master_peer(), path => "/block/current"}),
+	{JSONStruct} = jiffy:decode(Body),
+	?assertEqual(ar_util:encode(B0#block.indep_hash),
+			proplists:get_value(<<"indep_hash">>, JSONStruct)).
 
 %% @doc Test that the various different methods of GETing a block all perform
 %% correctly if the block cannot be found.
@@ -584,18 +583,14 @@ test_add_block_with_invalid_hash() ->
 	start(B0),
 	{_Slave, _} = slave_start(B0),
 	slave_mine(),
-	BI = assert_slave_wait_until_height(1),
 	Peer = {127, 0, 0, 1, 1984},
-	B1Shadow =
-		(slave_call(ar_storage, read_block, [hd(BI)]))#block{
-			hash_list = [B0#block.indep_hash]
-		},
-	%% Try to post an invalid block. This triggers a ban in ar_blacklist_middleware.
+	BI = ar_test_node:assert_slave_wait_until_height(1),
+	B1Shadow = slave_call(ar_storage, read_block, [hd(BI)]),
+	%% Try to post an invalid block.
 	InvalidH = crypto:strong_rand_bytes(48),
 	ok = ar_events:subscribe(block),
-	?assertMatch(
-		{ok, {{<<"200">>, _}, _, _, _, _}},
-		send_new_block(Peer, B1Shadow#block{ indep_hash = InvalidH, nonce = <<>> })),
+	?assertMatch({ok, {{<<"200">>, _}, _, _, _, _}},
+			send_new_block(Peer, B1Shadow#block{ indep_hash = InvalidH, nonce = <<>> })),
 	receive
 		{event, block, {rejected, invalid_hash, InvalidH, Peer}} ->
 			ok
@@ -603,33 +598,40 @@ test_add_block_with_invalid_hash() ->
 			?assert(false, "Did not receive the rejected block event (invalid_hash).")
 	end,
 	%% Verify the IP address of self is NOT banned in ar_blacklist_middleware.
+	InvalidH2 = crypto:strong_rand_bytes(48),
 	?assertMatch({ok, {{<<"200">>, _}, _, _, _, _}}, send_new_block(
-			Peer, B1Shadow#block{ indep_hash = crypto:strong_rand_bytes(48) })),
-	ar_blacklist_middleware:reset(),
+			Peer, B1Shadow#block{ indep_hash = InvalidH2 })),
+	receive
+		{event, block, {rejected, invalid_hash, InvalidH2, Peer}} ->
+			ok
+		after 500 ->
+			?assert(false, "Did not receive the rejected block event (invalid_hash).")
+	end,
 	%% The valid block with the ID from the failed attempt can still go through.
 	?assertMatch({ok, {{<<"200">>, _}, _, _, _, _}}, send_new_block(Peer, B1Shadow)),
+	receive
+		{event, block, {new, _, _}} ->
+			ok
+	after 2000 ->
+		?assert(false, "Did not receive the expected new block event.")
+	end,
 	%% Try to post the same block again.
 	?assertMatch({ok, {{<<"208">>, _}, _, _, _, _}}, send_new_block(Peer, B1Shadow)),
 	%% Correct hash, but invalid PoW.
 	B2Shadow = B1Shadow#block{ reward_addr = crypto:strong_rand_bytes(32) },
-	InvalidH2 = ar_block:indep_hash(B2Shadow),
-	?assertMatch(
-		{ok, {{<<"200">>, _}, _, _, _, _}},
-		send_new_block(Peer, B2Shadow#block{ indep_hash = InvalidH2 })),
+	InvalidH3 = ar_block:indep_hash(B2Shadow),
+	timer:sleep(1000 * 2), % ?THROTTLE_BY_IP_INTERVAL_MS * 2
+	?assertMatch({ok, {{<<"200">>, _}, _, _, _, _}},
+			send_new_block(Peer, B2Shadow#block{ indep_hash = InvalidH3 })),
 	receive
-		{event, block, {rejected, invalid_pow, InvalidH2, Peer}} ->
-			ok
+		{event, block, EventData} ->
+			?assertEqual({rejected, invalid_pow, InvalidH3, Peer}, EventData)
 		after 500 ->
-			?assert(false, "Did not receive the rejected block event "
-					"(invalid_pow).")
+			?assert(false, "Did not receive the rejected block event (invalid_pow).")
 	end,
 	?assertMatch(
 		{ok, {{<<"403">>, _}, _, <<"IP address blocked due to previous request.">>, _, _}},
-		send_new_block(
-			Peer,
-			B1Shadow#block{indep_hash = crypto:strong_rand_bytes(48) }
-		)
-	),
+		send_new_block(Peer, B1Shadow#block{indep_hash = crypto:strong_rand_bytes(48) })),
 	ar_blacklist_middleware:reset().
 
 add_external_block_with_invalid_timestamp_pre_fork_2_6_test_() ->
@@ -1209,14 +1211,21 @@ get_error_of_data_limit_test() ->
 		}),
 	?assertEqual({error, too_much_data}, Resp).
 
-send_block2_test_() ->
-	{timeout, 60, fun test_send_block2/0}.
+send_block2_pre_fork_2_6_test_() ->
+	test_on_fork(height_2_6, infinity, fun() -> test_send_block2(infinity) end).
 
-test_send_block2() ->
+send_block2_test_() ->
+	test_on_fork(height_2_6, 0, fun() -> test_send_block2(0) end).
+
+test_send_block2(Fork_2_6) ->
 	{_, Pub} = Wallet = ar_wallet:new(),
 	[B0] = ar_weave:init([{ar_wallet:to_address(Pub), ?AR(100), <<>>}]),
-	start(B0),
-	slave_start(B0),
+	MasterWallet = ar_wallet:new_ecdsa(),
+	MasterAddress = ar_wallet:to_address(MasterWallet),
+	SlaveWallet = slave_call(ar_wallet, new_ecdsa, []),
+	SlaveAddress = ar_wallet:to_address(SlaveWallet),
+	start(B0, MasterAddress),
+	slave_start(B0, SlaveAddress),
 	disconnect_from_slave(),
 	TXs = [sign_tx(Wallet, #{ last_tx => get_tx_anchor() }) || _ <- lists:seq(1, 10)],
 	lists:foreach(fun(TX) -> assert_post_tx_to_master(TX) end, TXs),
@@ -1307,16 +1316,18 @@ test_send_block2() ->
 			body => ar_serialize:block_announcement_to_binary(#block_announcement{
 					indep_hash = B5#block.indep_hash,
 					previous_block = B5#block.previous_block }) }),
+	ExpectedSlavePacking = case Fork_2_6 of infinity -> spora_2_5;
+			0 -> {spora_2_6, SlaveAddress} end,
 	lists:foreach(
 		fun(#tx{ id = TXID }) ->
 			true = ar_util:do_until(
 				fun() ->
 					{ok, {End, _}} = slave_call(ar_data_sync, get_tx_offset, [TXID]),
 					slave_call(ar_sync_record, is_recorded, [End, ar_data_sync])
-							== {true, spora_2_5}
+							== {true, ExpectedSlavePacking}
 				end,
 				100,
-				5000
+				20000
 			)
 		end,
 		TXs2
