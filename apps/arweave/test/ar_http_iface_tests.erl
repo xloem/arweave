@@ -753,7 +753,10 @@ update_block_timestamp(B, Timestamp) ->
 	B3#block{ indep_hash = ar_block:indep_hash(B3) }.
 
 %% @doc Post a tx to the network and ensure that last_tx call returns the ID of last tx.
-add_tx_and_get_last_test() ->
+add_tx_and_get_last_test_() ->
+	{timeout, 20, fun test_add_tx_and_get_last/0}.
+
+test_add_tx_and_get_last() ->
 	{Priv1, Pub1} = ar_wallet:new(),
 	[B0] = ar_weave:init([{ar_wallet:to_address(Pub1), ?AR(10000), <<>>}]),
 	{_Node, _} = start(B0),

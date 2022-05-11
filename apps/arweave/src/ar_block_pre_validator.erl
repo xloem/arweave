@@ -345,7 +345,8 @@ pre_validate_search_space_number(B, PrevB, Peer, Timestamp, ReadBodyTime, BodySi
 
 pre_validate_nonce(B, PrevB, SearchSpaceUpperBound, Peer, Timestamp, ReadBodyTime,
 		BodySize) ->
-	Max = max(0, ?RECALL_SUBSPACE_SIZE div ?DATA_CHUNK_SIZE - 1),
+	Fork_2_7 = ar_fork:height_2_7(),
+	Max = max(0, (?RECALL_SUBSPACE_SIZE(B#block.height, Fork_2_7)) div ?DATA_CHUNK_SIZE - 1),
 	case B#block.nonce > Max of
 		true ->
 			post_block_reject_warn(B, check_nonce, Peer),

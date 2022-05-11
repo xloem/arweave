@@ -16,9 +16,14 @@
 %% The size of a recall subspace. The first subspace is randomly chosen from the given
 %% search space. The second subspace is chosen from the entire weave.
 -ifdef(DEBUG).
--define(RECALL_SUBSPACE_SIZE, (100 * 1024)). % TODO function of height
+-define(RECALL_SUBSPACE_SIZE(MACRO_Height, MACRO_Fork_2_7), fun() ->
+	max(100 * 1024, 200 * 1024 - (MACRO_Height - MACRO_Fork_2_7) * (10 * 1024))
+end()).
 -else.
--define(RECALL_SUBSPACE_SIZE, 104857600). % 100 * 1024 * 1024.
+-define(RECALL_SUBSPACE_SIZE(MACRO_Height, MACRO_Fork_2_7), fun() ->
+	%% Start at 4000 MiB and drop down to 100 MiB in about 90 days (64800 blocks).
+	max(104857600, 4194304000 - (MACRO_Height - MACRO_Fork_2_7) * 63488)
+end()).
 -endif.
 
 %% The threshold was determined on the mainnet at the 2.5 fork block. The chunks
