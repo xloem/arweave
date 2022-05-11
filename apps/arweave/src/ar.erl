@@ -64,6 +64,7 @@
 		ar_poa,
 		ar_data_sync_tests,
 		ar_gateway_middleware_tests,
+		ar_mine_vdf_tests,
 		ar_mine_randomx_tests
 	]
 ).
