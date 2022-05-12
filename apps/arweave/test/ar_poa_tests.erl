@@ -126,7 +126,7 @@ test_v2_transactions_after_2_0() ->
 	).
 
 recall_byte_on_the_border_test_() ->
-	{timeout, 60, fun test_recall_byte_on_the_border/0}.
+	{timeout, 120, fun test_recall_byte_on_the_border/0}.
 
 test_recall_byte_on_the_border() ->
 	Key = {_, Pub} = ar_wallet:new(),
