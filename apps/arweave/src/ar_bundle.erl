@@ -15,9 +15,18 @@
 	tags_avro = <<>>
 }).
 
--export([parse_ans104_header/1, parse_ans104_dataitem_header/1, parse_ans104_tags_avro/1]).
+-export([encode_ans104_header/1, encode_ans104_dataitem_header/1, encode_ans104_tags_avro/1,
+		parse_ans104_header/1, parse_ans104_dataitem_header/1, parse_ans104_tags_avro/1]).
 
-%encode_ans104_header(Entries) 
+encode_ans104_header(Entries) ->
+	encode_ans104_header(Entries, <<>>, 0).
+
+encode_ans104_header([], Encoded, Count) ->
+	<< Count:32, Encoded/binary >>;
+encode_ans104_header([{Size, ID} | Entries], Encoded, N)  ->
+	encode_ans104_header(Entries, << Size:32, ID:32/binary, Encoded/binary >>, N + 1);
+encode_ans104_header([{_Offset, Size, ID} | Entries], Encoded, N)  ->
+	encode_ans104_header(Entries, << Size:32, ID:32/binary, Encoded/binary >>, N + 1).
 
 parse_ans104_header(<< Count:32, Rest/binary >>) when Count =< 100000000 ->
 	parse_ans104_header(Count, Rest, 32 + Count * 64, []);
@@ -31,6 +40,15 @@ parse_ans104_header(N, << Size:32, ID:32/binary, Rest/binary >>, Offset, Entries
 	parse_ans104_header(N - 1, Rest, Offset + Size, [Entries | {Offset, Size, ID}]);
 parse_ans104_header(_N, _Bin, _Offset, _Entries) ->
 	{error, invalid_ans104_header}.
+
+encode_ans104_dataitem_header(#ans104_item{
+		sigtype = SigType, signature = Signature, owner = Owner,
+		target = Target, anchor = Anchor, tags_count = TagsCount,
+		tags_avro = TagsAvro }) ->
+	<< SigType:16, Signature/bytes, Owner/bytes, 
+		(case Target of <<>> -> 0; _ -> 1 end):8, Target/bytes,
+		(case Anchor of <<>> -> 0; _ -> 1 end):8, Anchor/bytes,
+		TagsCount:64, (byte_size(TagsAvro)):64, TagsAvro/bytes >>.
 
 parse_ans104_dataitem_header(
 		<< 1:16, SigRSA:512/binary, OwnerRSA:512/binary, Rest/binary >>) ->
@@ -77,10 +95,29 @@ parse_ans104_dataitem_anchor(<< 0:8, Rest/binary >>, DI) ->
 parse_ans104_dataitem_anchor(_Bin, _DI) ->
 	{error, invalid_ans104_dataitem_header}.
 
-%encode_vint(Value) when Value < 128 ->
-%	<< Value:8 >>;
-%encode_vint(Value) when Value >= 128 ->
-%	<< 1:1, (Value band 127):7, (encode_vint(Value bsr 7))/binary >>.
+parse_ans104_dataitem_tags(<< Count:64, Size:64, AvroData:Size/binary, Rest/binary >>, DI) ->
+	{ok, DI#ans104_item{
+		tags_count = Count,
+		tags_avro = AvroData
+	}, Rest}.
+
+encode_vint(Value) when Value < 128 ->
+	<< Value:8 >>;
+encode_vint(Value) when Value >= 128 ->
+	<< 1:1, (Value band 127):7, (encode_vint(Value bsr 7))/binary >>.
+
+encode_zigzag(TwosComplement) ->
+	Mid = TwosComplement bsl 1,
+	if Mid < 0 -> bnot Mid; true -> Mid end.
+
+encode_avro_long(Long) ->
+	encode_vint(encode_zigzag(Long)).
+
+encode_avro_bin(<< Bin/binary >>) ->
+	<< (encode_vint(encode_zigzag(byte_size(Bin))))/binary, Bin >>.
+
+encode_avro_array_block_header(Count) ->
+	encode_avro_long(Count).
 
 parse_vint(<< 0:0, Value:7, Rest/binary >>) ->
 	{ ok, Value, Rest };
@@ -94,16 +131,9 @@ parse_vint(<< 1:1, Value:7, Rest/binary >>) ->
 parse_vint(_Bin) ->
 	{error, invalid_vint}.
 
-%encode_zigzag(TwosComplement) ->
-%	Mid = TwosComplement bsl 1,
-%	if Mid < 0 -> bnot Mid; true -> Mid end.
-
 parse_zigzag(ZigZag) ->
 	Mid = case ZigZag band 1 of 1 -> bnot ZigZag; 0 -> ZigZag end,
 	Mid bsr 1.
-
-%encode_avro_long(Long) ->
-%	encode_vint(encode_zigzag(Long)).
 
 parse_avro_long(Bin) ->
 	case parse_vint(Bin) of
@@ -112,9 +142,6 @@ parse_avro_long(Bin) ->
 		{ok, Value, Rest} ->
 			{ok, parse_zigzag(Value), Rest}
 	end.
-
-%encode_avro_binary(<< Bin/binary >>) ->
-%	<< (encode_vint(encode_zigzag(byte_size(Bin))))/binary, Bin >>.
 
 parse_avro_bin(Bin) ->
 	case parse_avro_long(Bin) of
@@ -144,6 +171,14 @@ parse_avro_array_block_header(Bin) ->
 					{error, invalid_avro_array}
 			end
 	end.
+
+encode_ans104_tag_avro({TagName, TagValue}) ->
+	<< (encode_avro_bin(TagName)), (encode_avro_bin(TagValue)) >>.
+
+encode_ans104_tags_avro([]) ->
+	<< (encode_avro_array_block_header(0)) >>;
+encode_ans104_tags_avro([Tag | Tags]) ->
+	<< (encode_avro_array_block_header(1)), (encode_ans104_tag_avro(Tag)), (encode_ans104_tags_avro(Tags)) >>.
 
 parse_ans104_tag_avro(Bin) ->
 	case parse_avro_bin(Bin) of
@@ -185,9 +220,3 @@ parse_ans104_tags_avro_blocks(Bin, PrevTags) ->
 
 parse_ans104_tags_avro(Bin) ->
 	parse_ans104_tags_avro_blocks(Bin, []).
-
-parse_ans104_dataitem_tags(<< Count:64, Size:64, AvroData:Size/binary, Rest/binary >>, DI) ->
-	{ok, DI#ans104_item{
-		tags_count = Count,
-		tags_avro = AvroData
-	}, Rest}.
