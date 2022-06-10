@@ -16,9 +16,7 @@
 }).
 
 -export([encode_ans104_header/1, encode_ans104_dataitem_header/1, encode_ans104_tags_avro/1,
-		parse_ans104_header/1, parse_ans104_dataitem_header/1, parse_ans104_tags_avro/1,
-        parse_avro_long/1, parse_avro_array_block_header/1,parse_avro_bin/1,parse_ans104_tags_avro_sequence/3
-        ,parse_ans104_tag_avro/1]).
+		parse_ans104_header/1, parse_ans104_dataitem_header/1, parse_ans104_tags_avro/1 ]).
 
 encode_ans104_header(Entries) ->
 	encode_ans104_header(Entries, <<>>, 0).
