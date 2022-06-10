@@ -37,7 +37,7 @@ parse_ans104_header(0, << Rest/binary >>, _Offset, Entries) ->
 	{ok, Entries, Rest};
 parse_ans104_header(N, << Size:32, ID:32/binary, Rest/binary >>, Offset, Entries) 
 		when  N > 0 ->
-	parse_ans104_header(N - 1, Rest, Offset + Size, [Entries | {Offset, Size, ID}]);
+	parse_ans104_header(N - 1, Rest, Offset + Size, [{Offset, Size, ID} | Entries]);
 parse_ans104_header(_N, _Bin, _Offset, _Entries) ->
 	{error, invalid_ans104_header}.
 
