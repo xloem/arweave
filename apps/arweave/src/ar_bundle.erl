@@ -5,7 +5,7 @@
 %% $ erl
 %% 1> c(ar_bundle).
 %% {ok,ar_bundle}
-%% 2> ar_bundle:parse_ans104_header(<< 1:32, 78:32, -1:256 >>).
+%% 2> ar_bundle:parse_ans104_header(<< 1:32/little, 78:32/little, -1:256 >>).
 
 -record(ans104_item, {
 	sigtype, signature, owner,
@@ -86,28 +86,28 @@ encode_ans104_dataitem_header(#ans104_item{
 		sigtype = SigType, signature = Signature, owner = Owner,
 		target = Target, anchor = Anchor, tags_count = TagsCount,
 		tags_avro = TagsAvro }) ->
-	<< SigType:16, Signature/bytes, Owner/bytes, 
+	<< SigType:16/little, Signature/bytes, Owner/bytes, 
 		(case Target of <<>> -> 0; _ -> 1 end):8, Target/bytes,
 		(case Anchor of <<>> -> 0; _ -> 1 end):8, Anchor/bytes,
-		TagsCount:64, (byte_size(TagsAvro)):64, TagsAvro/bytes >>.
+		TagsCount:64/little, (byte_size(TagsAvro)):64/little, TagsAvro/bytes >>.
 
 parse_ans104_dataitem_header(
-		<< 1:16, SigRSA:512/binary, OwnerRSA:512/binary, Rest/binary >>) ->
+		<< 1:16/little, SigRSA:512/binary, OwnerRSA:512/binary, Rest/binary >>) ->
 	parse_ans104_dataitem_target(Rest, #ans104_item{
 			sigtype = 1, signature = SigRSA, owner = OwnerRSA
 	});
 parse_ans104_dataitem_header(
-		<< 2:16, SigCurve25519:64/binary, OwnerCurve25519:32/binary, Rest/binary >>) ->
+		<< 2:16/little, SigCurve25519:64/binary, OwnerCurve25519:32/binary, Rest/binary >>) ->
 	parse_ans104_dataitem_target(Rest, #ans104_item{
 			sigtype = 2, signature = SigCurve25519, owner = OwnerCurve25519
 	});
 parse_ans104_dataitem_header(
-		<< 3:16, SigSecp256k1:65/binary, OwnerSecp256k1:65/binary, Rest/binary >>) ->
+		<< 3:16/little, SigSecp256k1:65/binary, OwnerSecp256k1:65/binary, Rest/binary >>) ->
 	parse_ans104_dataitem_target(Rest, #ans104_item{
 			sigtype = 3, signature = SigSecp256k1, owner = OwnerSecp256k1
 	});
 parse_ans104_dataitem_header(
-		<< 4:16, SigSolana:64/binary, OwnerSolana:32/binary, Rest/binary >>) ->
+		<< 4:16/little, SigSolana:64/binary, OwnerSolana:32/binary, Rest/binary >>) ->
 	parse_ans104_dataitem_target(Rest, #ans104_item{
 			sigtype = 4, signature = SigSolana, owner = OwnerSolana
 	});
@@ -136,7 +136,7 @@ parse_ans104_dataitem_anchor(<< 0:8, Rest/binary >>, DI) ->
 parse_ans104_dataitem_anchor(_Bin, _DI) ->
 	{error, invalid_ans104_dataitem_header}.
 
-parse_ans104_dataitem_tags(<< Count:64, Size:64, AvroData:Size/binary, Rest/binary >>, DI) ->
+parse_ans104_dataitem_tags(<< Count:64/little, Size:64/little, AvroData:Size/binary, Rest/binary >>, DI) ->
 	{ok, DI#ans104_item{
 		tags_count = Count,
 		tags_avro = AvroData
