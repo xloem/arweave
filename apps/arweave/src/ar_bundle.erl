@@ -53,7 +53,7 @@ parse_ans104_header(_Bin) ->
 	{error, invalid_ans104_header}.
 
 parse_ans104_header(0, << Rest/binary >>, _Offset, Entries) ->
-	{ok, Entries, Rest};
+	{ok, lists:reverse(Entries), Rest};
 parse_ans104_header(N, << Size:256/little, ID:32/binary, Rest/binary >>, Offset, Entries) 
 		when  N > 0 ->
 	parse_ans104_header(N - 1, Rest, Offset + Size, [{Offset, Size, ID} | Entries]);
@@ -68,6 +68,8 @@ parse_ans104(Bin) ->
 			parse_ans104(Header, Body, [])
 	end.
 
+parse_ans104([],<<>>,DataItems) ->
+	{ok, DataItems};
 parse_ans104([{_Offset, Size, ID} | Entries], Bin, DataItems) ->
 	<< DataItemBin:Size/binary, Rest/binary >> = Bin,
 	case parse_ans104_dataitem_header(DataItemBin) of
@@ -80,7 +82,9 @@ parse_ans104([{_Offset, Size, ID} | Entries], Bin, DataItems) ->
 				_ ->
 					{error, invalid_ans104_bundle}
 			end
-	end.
+	end;
+parse_ans104(_List,_Bin,_) ->
+	{error, invalid_ans104_bundle}.
 
 encode_ans104_dataitem_header(#ans104_item{
 		sigtype = SigType, signature = Signature, owner = Owner,
