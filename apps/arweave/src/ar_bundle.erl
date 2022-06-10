@@ -16,7 +16,9 @@
 }).
 
 -export([encode_ans104_header/1, encode_ans104_dataitem_header/1, encode_ans104_tags_avro/1,
-		parse_ans104_header/1, parse_ans104_dataitem_header/1, parse_ans104_tags_avro/1]).
+		parse_ans104_header/1, parse_ans104_dataitem_header/1, parse_ans104_tags_avro/1,
+        parse_avro_long/1, parse_avro_array_block_header/1,parse_avro_bin/1,parse_ans104_tags_avro_sequence/3
+        ,parse_ans104_tag_avro/1]).
 
 encode_ans104_header(Entries) ->
 	encode_ans104_header(Entries, <<>>, 0).
@@ -114,12 +116,12 @@ encode_avro_long(Long) ->
 	encode_vint(encode_zigzag(Long)).
 
 encode_avro_bin(<< Bin/binary >>) ->
-	<< (encode_vint(encode_zigzag(byte_size(Bin))))/binary, Bin >>.
+	<< (encode_vint(encode_zigzag(byte_size(Bin))))/binary, Bin/binary >>.
 
 encode_avro_array_block_header(Count) ->
 	encode_avro_long(Count).
 
-parse_vint(<< 0:0, Value:7, Rest/binary >>) ->
+parse_vint(<< 0:1, Value:7, Rest/binary >>) ->
 	{ ok, Value, Rest };
 parse_vint(<< 1:1, Value:7, Rest/binary >>) ->
 	case parse_vint(Rest) of
@@ -147,7 +149,7 @@ parse_avro_bin(Bin) ->
 	case parse_avro_long(Bin) of
 		{error, Reason} ->
 			{error, Reason};
-		{ok, Size, Bin2} when Size >= byte_size(Bin2) ->
+		{ok, Size, Bin2} when Size =< byte_size(Bin2) ->
 			<< Bin3:Size/binary, Rest/binary >> = Bin2,
 			{ok, Bin3, Rest};
 		{ok, _Size, _Bin} ->
@@ -164,28 +166,28 @@ parse_avro_array_block_header(Bin) ->
 			case parse_avro_long(Bin2) of
 				{error, Reason} ->
 					{error, Reason};
-				{ok, Size, Bin3} when Size >= byte_size(Bin3) ->
+				{ok, Size, Bin3} when Size =< byte_size(Bin3) ->
 					<< Items:Size/binary, Rest/binary >> = Bin3,
-					{ok, -Count, << Items, Rest >>};
+					{ok, -Count, << Items/binary, Rest/binary >>};
 				{ok, _Size, _Bin} ->
 					{error, invalid_avro_array}
 			end
 	end.
 
 encode_ans104_tag_avro({TagName, TagValue}) ->
-	<< (encode_avro_bin(TagName)), (encode_avro_bin(TagValue)) >>.
+	<< (encode_avro_bin(TagName))/bytes, (encode_avro_bin(TagValue))/bytes >>.
 
 encode_ans104_tags_avro([]) ->
-	<< (encode_avro_array_block_header(0)) >>;
+	<< (encode_avro_array_block_header(0))/bytes >>;
 encode_ans104_tags_avro([Tag | Tags]) ->
-	<< (encode_avro_array_block_header(1)), (encode_ans104_tag_avro(Tag)), (encode_ans104_tags_avro(Tags)) >>.
+	<< (encode_avro_array_block_header(1))/bytes, (encode_ans104_tag_avro(Tag))/bytes, (encode_ans104_tags_avro(Tags))/bytes >>.
 
 parse_ans104_tag_avro(Bin) ->
 	case parse_avro_bin(Bin) of
 		{error, Reason} ->
 			{error, Reason};
-		{ok, TagName, Rest} ->
-			case parse_avro_bin(Rest) of
+		{ok, TagName, ValueBin} ->
+			case parse_avro_bin(ValueBin) of
 				{error, Reason} ->
 					{error, Reason};
 				{ok, TagValue, Rest} ->
