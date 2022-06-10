@@ -15,31 +15,72 @@
 	tags_avro = <<>>
 }).
 
--export([encode_ans104_header/1, encode_ans104_dataitem_header/1, encode_ans104_tags_avro/1,
-		parse_ans104_header/1, parse_ans104_dataitem_header/1, parse_ans104_tags_avro/1 ]).
+-export([encode_ans104/1, encode_ans104_header/1, encode_ans104_dataitem_header/1, encode_ans104_tags_avro/1,
+		parse_ans104/1, parse_ans104_header/1, parse_ans104_dataitem_header/1, parse_ans104_tags_avro/1,
+		ans104_dataitem_id/1, extract_ans104_dataitem/3]).
+
+ans104_dataitem_id(#ans104_item{signature = Signature}) ->
+	crypto:hash(sha256, Signature).
+
+extract_ans104_dataitem(Bin, Offset, Size) ->
+	<< _Skip:Offset/binary, DataItem:Size/binary, _Rest/binary >> = Bin,
+	parse_ans104_dataitem_header(DataItem).
 
 encode_ans104_header(Entries) ->
 	encode_ans104_header(Entries, <<>>, 0).
 
 encode_ans104_header([], Encoded, Count) ->
-	<< Count:32, Encoded/binary >>;
-encode_ans104_header([{Size, ID} | Entries], Encoded, N)  ->
-	encode_ans104_header(Entries, << Size:32, ID:32/binary, Encoded/binary >>, N + 1);
+	<< Count:256/little, Encoded/binary >>;
+encode_ans104_header([{Size, << ID:32/binary >>} | Entries], Encoded, N)  ->
+	encode_ans104_header(Entries, << Size:256/little, ID:32/binary, Encoded/binary >>, N + 1);
 encode_ans104_header([{_Offset, Size, ID} | Entries], Encoded, N)  ->
-	encode_ans104_header(Entries, << Size:32, ID:32/binary, Encoded/binary >>, N + 1).
+	encode_ans104_header(Entries, << Size:256/little, ID:32/binary, Encoded/binary >>, N + 1);
+encode_ans104_header([{ANS104_Item, << Data/binary >> } | Entries], Encoded, N) ->
+	Size = byte_size(encode_ans104_dataitem_header(ANS104_Item)) + byte_size(Data),
+	encode_ans104_header(Entries, << Size:256/little, (ans104_dataitem_id(ANS104_Item))/binary, Encoded/binary >>, N + 1).
 
-parse_ans104_header(<< Count:32, Rest/binary >>) when Count =< 100000000 ->
+encode_ans104(DataItems) ->
+	<< (encode_ans104_header(DataItems))/binary, (encode_ans104_dataitems(DataItems))/binary >>.
+
+encode_ans104_dataitems([]) ->
+	<< >>;
+encode_ans104_dataitems([{ANS104_Item, Data} | Entries]) ->
+	<< (encode_ans104_dataitem_header(ANS104_Item))/binary, Data/binary, (encode_ans104_dataitems(Entries))/binary >>.
+
+parse_ans104_header(<< Count:256/little, Rest/binary >>) when Count =< 100000000 ->
 	parse_ans104_header(Count, Rest, 32 + Count * 64, []);
 parse_ans104_header(_Bin) ->
 	{error, invalid_ans104_header}.
 
 parse_ans104_header(0, << Rest/binary >>, _Offset, Entries) ->
 	{ok, Entries, Rest};
-parse_ans104_header(N, << Size:32, ID:32/binary, Rest/binary >>, Offset, Entries) 
+parse_ans104_header(N, << Size:256/little, ID:32/binary, Rest/binary >>, Offset, Entries) 
 		when  N > 0 ->
 	parse_ans104_header(N - 1, Rest, Offset + Size, [{Offset, Size, ID} | Entries]);
 parse_ans104_header(_N, _Bin, _Offset, _Entries) ->
 	{error, invalid_ans104_header}.
+
+parse_ans104(Bin) ->
+	case parse_ans104_header(Bin) of
+		{error, Reason} ->
+			{error, Reason};
+		{ok, Header, Body} ->
+			parse_ans104(Header, Body, [])
+	end.
+
+parse_ans104([{_Offset, Size, ID} | Entries], Bin, DataItems) ->
+	<< DataItemBin:Size/binary, Rest/binary >> = Bin,
+	case parse_ans104_dataitem_header(DataItemBin) of
+		{error, Reason} ->
+			{error, Reason};
+		{ok, Header, Data} ->
+			case ans104_dataitem_id(Header) of
+				ID ->
+					parse_ans104(Entries, Rest, [{Header, Data} | DataItems]);
+				_ ->
+					{error, invalid_ans104_bundle}
+			end
+	end.
 
 encode_ans104_dataitem_header(#ans104_item{
 		sigtype = SigType, signature = Signature, owner = Owner,
