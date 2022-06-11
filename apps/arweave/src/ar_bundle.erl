@@ -269,4 +269,11 @@ parse_ans104_tags_avro_blocks(Bin, PrevTags) ->
 	end.
 
 parse_ans104_tags_avro(Bin) ->
-	parse_ans104_tags_avro_blocks(Bin, []).
+	case parse_ans104_tags_avro_blocks(Bin, []) of
+		{error, Reason} ->
+			{error, Reason};
+		{ok, Tags, <<>>} ->
+			{ok, Tags};
+		{ok, _Tags, _Bin} ->
+			{error, invalid_avro_array}
+	end.
