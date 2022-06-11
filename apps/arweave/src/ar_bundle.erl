@@ -16,7 +16,7 @@
 }).
 
 -export([encode_ans104/1, encode_ans104_header/1, encode_ans104_dataitem_header/1, encode_ans104_tags_avro/1,
-		parse_ans104/1, parse_ans104_header/1, parse_ans104_dataitem_header/1, parse_ans104_tags_avro/1,
+		parse_ans104/1, parse_ans104_header_size/1, parse_ans104_header/1, parse_ans104_dataitem_header/1, parse_ans104_tags_avro/1,
 		ans104_dataitem_id/1, extract_ans104_dataitem/3]).
 
 ans104_dataitem_id(#ans104_item{signature = Signature}) ->
@@ -46,6 +46,11 @@ encode_ans104_dataitems([]) ->
 	<< >>;
 encode_ans104_dataitems([{ANS104_Item, Data} | Entries]) ->
 	<< (encode_ans104_dataitem_header(ANS104_Item))/binary, Data/binary, (encode_ans104_dataitems(Entries))/binary >>.
+
+parse_ans104_header_size(<< Count:256/little, _Rest/binary >>) when Count =< 100000000 ->
+	{ok, 32 + Count * 64};
+parse_ans104_header_size(_Bin) ->
+	{error, invalid_ans104_header}.
 
 parse_ans104_header(<< Count:256/little, Rest/binary >>) when Count =< 100000000 ->
 	parse_ans104_header(Count, Rest, 32 + Count * 64, []);
