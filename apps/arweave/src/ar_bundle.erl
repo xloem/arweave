@@ -37,7 +37,7 @@ encode_ans104_header([{_Offset, Size, ID} | Entries], Encoded, N)  ->
 	encode_ans104_header(Entries, << Size:256/little, ID:32/binary, Encoded/binary >>, N + 1);
 encode_ans104_header([{ANS104_Item, << Data/binary >> } | Entries], Encoded, N) ->
 	Size = byte_size(encode_ans104_dataitem_header(ANS104_Item)) + byte_size(Data),
-	encode_ans104_header(Entries, << Size:256/little, (ans104_dataitem_id(ANS104_Item))/binary, Encoded/binary >>, N + 1).
+	encode_ans104_header(Entries, << Encoded/binary, Size:256/little, (ans104_dataitem_id(ANS104_Item))/binary >>, N + 1).
 
 encode_ans104(DataItems) ->
 	<< (encode_ans104_header(DataItems))/binary, (encode_ans104_dataitems(DataItems))/binary >>.
