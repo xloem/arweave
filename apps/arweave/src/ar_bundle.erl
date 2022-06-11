@@ -69,7 +69,7 @@ parse_ans104(Bin) ->
 	end.
 
 parse_ans104([],<<>>,DataItems) ->
-	{ok, DataItems};
+	{ok, lists:reverse(DataItems)};
 parse_ans104([{_Offset, Size, ID} | Entries], Bin, DataItems) ->
 	<< DataItemBin:Size/binary, Rest/binary >> = Bin,
 	case parse_ans104_dataitem_header(DataItemBin) of
